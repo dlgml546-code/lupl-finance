@@ -80,7 +80,7 @@ VITE_SUPABASE_ANON_KEY=Supabase anon public key
 ## 5. GitHub/Vercel 배포
 
 ```bash
-npm install
+npm ci --no-audit --no-fund
 npm run build
 ```
 
@@ -100,3 +100,14 @@ Output Directory: dist
 
 대표와 본부장은 기본 전체 접근입니다.
 책임/선임/매니저는 `page_permissions`에 등록된 페이지를 볼 수 있습니다.
+
+
+## Vercel 설치 명령
+
+이번 버전은 npm 자체 오류를 피하기 위해 `npm install` 대신 lockfile 기반 `npm ci --no-audit --no-fund`를 사용합니다.
+
+Vercel Project Settings에 기존 Install Command가 남아 있으면 아래로 바꾸세요.
+
+```text
+npm ci --no-audit --no-fund
+```

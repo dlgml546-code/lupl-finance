@@ -1,8 +1,7 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useState } from "react";
 import {
   Building2,
   Camera,
-  Check,
   Clock,
   FilePlus2,
   FolderPlus,
@@ -188,7 +187,7 @@ export default function App() {
     }
   }, [currentPerson, permissions, section]);
 
-  function showToast(message: string, type: Toast["type"] = "ok") {
+  function showToast(message: string, type: "ok" | "warn" | "err" = "ok") {
     setToast({ message, type });
     window.setTimeout(() => setToast(null), 2400);
   }
@@ -787,10 +786,15 @@ function AuthScreen() {
         <div className="brand-mark">경영</div>
         <h1>러플 경영관리 대시보드</h1>
         <p>Supabase 계정으로 로그인하면 실제 데이터가 저장됩니다.</p>
-        <form action={handleAuth}>
+        <form
+          onSubmit={(event) => {
+            event.preventDefault();
+            void handleAuth(new FormData(event.currentTarget));
+          }}
+        >
           <label>이메일<input name="email" type="email" required placeholder="cs@lupl.kr" /></label>
           <label>비밀번호<input name="password" type="password" required minLength={6} placeholder="6자 이상" /></label>
-          <button className="btn blue" disabled={busy}>{mode === "login" ? "로그인" : "회원가입"}</button>
+          <button className="btn blue" type="submit" disabled={busy}>{mode === "login" ? "로그인" : "회원가입"}</button>
         </form>
         <button className="link-btn" onClick={() => setMode(mode === "login" ? "signup" : "login")}>
           {mode === "login" ? "처음이면 회원가입" : "이미 계정이 있으면 로그인"}
