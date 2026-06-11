@@ -223,7 +223,8 @@ begin
     'project_labor_allocations','cash_snapshots'
   ]
   loop
-    execute format('create trigger if not exists trg_%I_updated_at before update on public.%I for each row execute function public.set_updated_at()', tbl, tbl);
+    execute format('drop trigger if exists trg_%I_updated_at on public.%I', tbl, tbl);
+    execute format('create trigger trg_%I_updated_at before update on public.%I for each row execute function public.set_updated_at()', tbl, tbl);
   end loop;
 end $$;
 
