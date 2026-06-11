@@ -54,41 +54,34 @@ type ModalKey =
 
 type Toast = { type: "ok" | "warn" | "err"; message: string } | null;
 
-const sectionMeta: Record<SectionKey, { title: string; desc: string; count: string }> = {
+const sectionMeta: Record<SectionKey, { title: string; desc: string }> = {
   overview: {
     title: "경영현황",
-    desc: "현재 현금, 이번 달 매출, 직원 월급 포함 지출, 현금소진액을 먼저 보여줍니다. 검토할 항목은 대표 검토함에서 팝업으로 확인하고 승인합니다.",
-    count: "4"
+    desc: "현재 현금, 이번 달 매출, 직원 월급 포함 지출, 현금소진액을 먼저 보여줍니다. 검토할 항목은 대표 검토함에서 팝업으로 확인하고 승인합니다."
   },
   review: {
     title: "대표 검토함",
-    desc: "지출결의, 사업·매출, 인건비, 인력투입, 권한 요청까지 대표가 검토할 항목을 한곳에 모읍니다.",
-    count: "0"
+    desc: "지출결의, 사업·매출, 인건비, 인력투입, 권한 요청까지 대표가 검토할 항목을 한곳에 모읍니다."
   },
   expense: {
     title: "지출결의",
-    desc: "영수증 사진을 빠르게 등록하고, 기존 노션 지출결의처럼 검토 요약과 상세 목록을 함께 확인합니다.",
-    count: "신규"
+    desc: "영수증 사진을 빠르게 등록하고, 기존 노션 지출결의처럼 검토 요약과 상세 목록을 함께 확인합니다."
   },
   revenue: {
     title: "사업·매출관리",
-    desc: "프로젝트 단위로 매출, 비용, 순이익, 마진율, 수금 상태를 관리합니다.",
-    count: "2"
+    desc: "프로젝트 단위로 매출, 비용, 순이익, 마진율, 수금 상태를 관리합니다."
   },
   compensation: {
     title: "인건비·보상",
-    desc: "직원별 연봉, 인상률, 지원사업 인건비, 상여금·성과보상을 한 화면에서 관리합니다.",
-    count: "신규"
+    desc: "직원별 연봉, 인상률, 지원사업 인건비, 상여금·성과보상을 한 화면에서 관리합니다."
   },
   resource: {
     title: "인력투입·매출분석",
-    desc: "프로젝트별 맨먼스, 가동률, 수익성 지도, 직위별 투입비율을 함께 봅니다.",
-    count: "84%"
+    desc: "프로젝트별 맨먼스, 가동률, 수익성 지도, 직위별 투입비율을 함께 봅니다."
   },
   org: {
     title: "조직·권한관리",
-    desc: "조직도와 페이지별 접근 권한을 관리합니다.",
-    count: "관리"
+    desc: "조직도와 페이지별 접근 권한을 관리합니다."
   }
 };
 
@@ -132,11 +125,6 @@ function parseNumber(value: FormDataEntryValue | null) {
 
 function today() {
   return new Date().toISOString().slice(0, 10);
-}
-
-function ymFirst() {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-01`;
 }
 
 function canManage(person: Person | null) {
@@ -355,13 +343,20 @@ export default function App() {
 
   async function createProject(formData: FormData) {
     try {
+      const revenue = parseNumber(formData.get("revenue"));
+      const cost = parseNumber(formData.get("cost"));
+      const profit = revenue - cost;
+      const marginRate = revenue > 0 ? profit / revenue : 0;
+
       const payload = {
         name: String(formData.get("name") || ""),
         category: String(formData.get("category") || "기타") as BusinessCategory,
         client_name: String(formData.get("client_name") || ""),
         status: String(formData.get("status") || "진행 중"),
-        revenue: parseNumber(formData.get("revenue")),
-        cost: parseNumber(formData.get("cost")),
+        revenue,
+        cost,
+        profit,
+        margin_rate: marginRate,
         receivable_amount: parseNumber(formData.get("receivable_amount")),
         man_months: Number(String(formData.get("man_months") || "0")) || 0,
         start_date: String(formData.get("start_date") || "") || null,
@@ -497,12 +492,18 @@ export default function App() {
 
   async function createBonus(formData: FormData) {
     try {
+      const profitAmount = parseNumber(formData.get("profit_amount"));
+      const bonusRateRaw = Number(String(formData.get("bonus_rate") || "0").replace("%", ""));
+      const bonusRate = bonusRateRaw / 100;
+      const bonusAmount = Math.round(profitAmount * bonusRate);
+
       const payload = {
         person_id: String(formData.get("person_id") || "") || null,
         project_id: String(formData.get("project_id") || "") || null,
         period_label: String(formData.get("period_label") || ""),
-        profit_amount: parseNumber(formData.get("profit_amount")),
-        bonus_rate: Number(String(formData.get("bonus_rate") || "0").replace("%", "")) / 100,
+        profit_amount: profitAmount,
+        bonus_rate: bonusRate,
+        bonus_amount: bonusAmount,
         payment_status: "검토 전" as ReviewStatus,
         planned_payment_date: String(formData.get("planned_payment_date") || "") || null,
         memo: String(formData.get("memo") || "")
@@ -557,8 +558,7 @@ export default function App() {
       const payload = {
         person_id: String(formData.get("person_id") || ""),
         page_key: String(formData.get("page_key") || "overview"),
-        permission: String(formData.get("permission") || "보기만 가능"),
-        granted_by: currentPerson?.id || null
+        permission: String(formData.get("permission") || "보기만 가능")
       };
 
       const { error } = await supabase.from("page_permissions").upsert(payload, { onConflict: "person_id,page_key" });
@@ -613,9 +613,9 @@ export default function App() {
             >
               <span className="nav-dot" />
               <span>{item.label}</span>
-              <span className="nav-count">
-                {item.key === "review" ? pendingReviews.length : sectionMeta[item.key].count}
-              </span>
+              {item.key === "review" && (
+                <span className="nav-count">{pendingReviews.length}</span>
+              )}
             </button>
           ))}
         </nav>
@@ -702,6 +702,7 @@ export default function App() {
         {section === "compensation" && (
           <Compensation
             people={people}
+            departments={departments}
             projects={projects}
             bonuses={bonuses}
             onOpenPerson={(person) => {
@@ -713,7 +714,7 @@ export default function App() {
           />
         )}
         {section === "resource" && (
-          <Resource projects={projects} labor={labor} onCreateLabor={() => setModal("laborForm")} />
+          <Resource projects={projects} people={people} labor={labor} onCreateLabor={() => setModal("laborForm")} />
         )}
         {section === "org" && (
           <Org
@@ -819,12 +820,12 @@ function Overview({
   expenses: ExpenseRequest[];
 }) {
   const latest = cash[0];
-  const monthlyRevenue = latest?.revenue || projects.reduce((sum, item) => sum + Number(item.revenue || 0), 0);
-  const monthlyExpense = latest?.expense || expenses.reduce((sum, item) => sum + Number(item.amount || 0), 0);
+  const monthlyRevenue = latest?.revenue ?? projects.reduce((sum, item) => sum + Number(item.revenue || 0), 0);
+  const monthlyExpense = latest?.expense ?? expenses.reduce((sum, item) => sum + Number(item.amount || 0), 0);
   const currentCash = latest?.current_cash || 0;
   const runway = latest?.runway_months || 0;
-  const receivable = latest?.receivable_amount || projects.reduce((sum, item) => sum + Number(item.receivable_amount || 0), 0);
-  const payable = latest?.payable_amount || expenses.filter((item) => item.review_status !== "승인").reduce((sum, item) => sum + Number(item.amount || 0), 0);
+  const receivable = latest?.receivable_amount ?? projects.reduce((sum, item) => sum + Number(item.receivable_amount || 0), 0);
+  const payable = latest?.payable_amount ?? expenses.filter((item) => item.review_status !== "승인").reduce((sum, item) => sum + Number(item.amount || 0), 0);
 
   return (
     <section className="section active">
@@ -856,7 +857,7 @@ function Overview({
 
         <KpiCard label="이번 달 매출" value={formatWon(monthlyRevenue)} chip="Supabase 연결" tone="green" />
         <KpiCard label="직원 월급 포함 지출" value={formatWon(monthlyExpense)} chip="전월 대비 확인" tone="red" />
-        <KpiCard label="현금소진액 / Runway" value={`${formatWon(latest?.net_burn || 0)} · ${runway}개월`} chip="주의 구간" tone="orange" />
+        <KpiCard label="현금소진액 / Runway" value={`${formatWon(latest?.net_burn || 0)}`} chip={`${runway}개월 runway`} tone="orange" />
       </div>
 
       <div className="grid two">
@@ -926,13 +927,13 @@ function ReviewInbox({
           <table>
             <thead>
               <tr>
-                <th style={{ width: 110 }}>영역</th>
-                <th style={{ width: 230 }}>항목명</th>
-                <th style={{ width: 180 }}>검토 사유</th>
-                <th style={{ width: 140 }} className="num">금액/영향</th>
-                <th style={{ width: 150 }}>담당</th>
-                <th style={{ width: 130 }}>상태</th>
-                <th style={{ width: 260 }}>처리</th>
+                <th style={{ width: 100 }}>영역</th>
+                <th style={{ width: 200 }}>항목명</th>
+                <th style={{ width: 160 }}>검토 사유</th>
+                <th style={{ width: 130 }} className="num">금액/영향</th>
+                <th style={{ width: 120 }}>담당</th>
+                <th style={{ width: 110 }}>상태</th>
+                <th style={{ width: 220 }}>처리</th>
               </tr>
             </thead>
             <tbody>
@@ -1005,14 +1006,14 @@ function Expense({
           <table>
             <thead>
               <tr>
-                <th style={{ width: 110 }}>사용일</th>
-                <th style={{ width: 220 }}>목적 및 용도</th>
-                <th style={{ width: 130 }}>사용 용도</th>
-                <th style={{ width: 120 }}>결제방식</th>
+                <th style={{ width: 100 }}>사용일</th>
+                <th style={{ width: 200 }}>목적 및 용도</th>
+                <th style={{ width: 110 }}>사용 용도</th>
+                <th style={{ width: 100 }}>결제방식</th>
                 <th style={{ width: 120 }} className="num">사용 금액</th>
-                <th style={{ width: 160 }}>증빙</th>
-                <th style={{ width: 170 }}>이체 여부</th>
-                <th style={{ width: 150 }}>상태</th>
+                <th style={{ width: 130 }}>증빙</th>
+                <th style={{ width: 130 }}>이체 여부</th>
+                <th style={{ width: 110 }}>상태</th>
               </tr>
             </thead>
             <tbody>
@@ -1125,6 +1126,7 @@ function Revenue({
 
 function Compensation({
   people,
+  departments,
   projects,
   bonuses,
   onOpenPerson,
@@ -1132,6 +1134,7 @@ function Compensation({
   onCreateBonus
 }: {
   people: Person[];
+  departments: Department[];
   projects: BusinessProject[];
   bonuses: BonusPayment[];
   onOpenPerson: (person: Person) => void;
@@ -1140,6 +1143,11 @@ function Compensation({
 }) {
   const totalSalary = people.reduce((sum, person) => sum + Number(person.annual_salary || 0), 0);
   const bonusTotal = bonuses.reduce((sum, bonus) => sum + Number(bonus.bonus_amount || 0), 0);
+
+  function getDeptName(deptId: string | null) {
+    if (!deptId) return "-";
+    return departments.find((d) => d.id === deptId)?.name || "-";
+  }
 
   return (
     <section className="section active">
@@ -1164,7 +1172,7 @@ function Compensation({
                   <tr key={person.id}>
                     <td>{person.name}</td>
                     <td>{person.rank}</td>
-                    <td>{person.department_id || "-"}</td>
+                    <td>{getDeptName(person.department_id)}</td>
                     <td className="num">{formatWon(person.annual_salary)}</td>
                     <td className="num">{formatWon(person.previous_annual_salary)}</td>
                     <td><button className="btn small ghost" onClick={() => onOpenPerson(person)}>상세</button></td>
@@ -1206,14 +1214,16 @@ function Compensation({
 
 function Resource({
   projects,
+  people,
   labor,
   onCreateLabor
 }: {
   projects: BusinessProject[];
+  people: Person[];
   labor: ProjectLaborAllocation[];
   onCreateLabor: () => void;
 }) {
-  const totalCapacity = 640;
+  const totalCapacity = people.filter((p) => p.is_active).reduce((sum, p) => sum + Number(p.monthly_capacity_hours || 160), 0);
   const totalHours = labor.reduce((sum, item) => sum + Number(item.hours || 0), 0);
   const totalMm = labor.reduce((sum, item) => sum + Number(item.man_months || 0), 0);
 
@@ -1228,9 +1238,9 @@ function Resource({
 
       <div className="grid four resource-top">
         <KpiCard compact label="총 가용시간" value={`${totalCapacity}h`} chip="월 기준" tone="blue" />
-        <KpiCard compact label="확정 투입" value={`${Math.round(totalHours)}h`} chip={`${Math.round((totalHours / totalCapacity) * 100)}%`} tone="green" />
+        <KpiCard compact label="확정 투입" value={`${Math.round(totalHours)}h`} chip={totalCapacity ? `${Math.round((totalHours / totalCapacity) * 100)}%` : "0%"} tone="green" />
         <KpiCard compact label="총 맨먼스" value={`${totalMm.toFixed(2)}MM`} chip="프로젝트 합계" tone="orange" />
-        <KpiCard compact label="평균 가동률" value={`${Math.round((totalHours / totalCapacity) * 100)}%`} chip="실시간" tone="orange" />
+        <KpiCard compact label="평균 가동률" value={`${totalCapacity ? Math.round((totalHours / totalCapacity) * 100) : 0}%`} chip="실시간" tone="orange" />
       </div>
 
       <div className="grid two">
@@ -1261,13 +1271,18 @@ function Resource({
           <span className="legend-item"><i className="legend-dot d" />선임</span>
           <span className="legend-item"><i className="legend-dot e" />매니저</span>
         </div>
+        {projects.length === 0 && <p style={{ color: "var(--muted)", fontSize: 14, marginTop: 16 }}>등록된 프로젝트가 없습니다.</p>}
         {projects.map((project) => {
           const items = labor.filter((item) => item.project_id === project.id);
-          const fallback: Array<[Rank, number]> = items.length ? [] : [["대표", 35], ["책임", 20], ["선임", 45]];
+          if (items.length === 0) return (
+            <div key={project.id} className="stack-row">
+              <strong>{project.name}</strong>
+              <div className="stack-bar" style={{ background: "rgba(16,24,40,0.055)" }} />
+              <span className="num">0.00MM</span>
+            </div>
+          );
           const total = items.reduce((sum, item) => sum + Number(item.allocation_rate || 0), 0);
-          const segments = items.length
-            ? items.map((item) => [item.rank, total ? Math.round((Number(item.allocation_rate) / total) * 100) : 0] as [Rank, number])
-            : fallback;
+          const segments = items.map((item) => [item.rank, total ? Math.round((Number(item.allocation_rate) / total) * 100) : 0] as [Rank, number]);
           const mm = items.reduce((sum, item) => sum + Number(item.man_months || 0), 0) || Number(project.man_months || 0);
           return <StackRow key={project.id} project={project.name} segments={segments} mm={`${mm.toFixed(2)}MM`} />;
         })}
@@ -1389,10 +1404,10 @@ function Modal({
     <div className="modal active" onClick={() => setModal(null)}>
       <div className="modal-card" onClick={(event) => event.stopPropagation()}>
         {modal === "projectForm" && (
-          <FormModal title="새 프로젝트 생성" desc="사업·매출관리에서 관리할 프로젝트를 생성합니다." onSubmit={onCreateProject}>
-            <label>프로젝트명<input name="name" required placeholder="성보학교 전시" /></label>
+          <FormModal title="새 프로젝트 생성" desc="사업·매출관리에서 관리할 프로젝트를 생성합니다." onSubmit={onCreateProject} onClose={() => setModal(null)}>
+            <label>프로젝트명<input name="name" required placeholder="예: 성보학교 전시" /></label>
             <label>카테고리<select name="category">{businessCategories.map((c) => <option key={c}>{c}</option>)}</select></label>
-            <label>거래처/기관<input name="client_name" placeholder="대구성보학교" /></label>
+            <label>거래처/기관<input name="client_name" placeholder="예: 대구성보학교" /></label>
             <label>상태<input name="status" defaultValue="진행 중" /></label>
             <label>매출<input name="revenue" defaultValue="0" /></label>
             <label>비용<input name="cost" defaultValue="0" /></label>
@@ -1405,9 +1420,9 @@ function Modal({
         )}
 
         {modal === "expenseForm" && (
-          <FormModal title="지출결의 등록" desc="영수증 사진을 업로드하면 Storage에 저장되고 OCR Edge Function이 실행됩니다." onSubmit={onCreateExpense}>
+          <FormModal title="지출결의 등록" desc="영수증 사진을 업로드하면 Storage에 저장되고 OCR Edge Function이 실행됩니다." onSubmit={onCreateExpense} onClose={() => setModal(null)}>
             <label>사용일<input type="date" name="used_at" defaultValue={today()} required /></label>
-            <label>목적 및 용도<input name="purpose" required placeholder="AI 교육 외부강사비" /></label>
+            <label>목적 및 용도<input name="purpose" required placeholder="예: AI 교육 외부강사비" /></label>
             <label>카테고리<select name="category">{expenseCategories.map((c) => <option key={c}>{c}</option>)}</select></label>
             <label>결제방식<input name="payment_method" defaultValue="카드" /></label>
             <label>금액<input name="amount" defaultValue="0" /></label>
@@ -1419,7 +1434,7 @@ function Modal({
         )}
 
         {modal === "personForm" && (
-          <FormModal title="직원 등록" desc="이메일을 기준으로 직원 정보를 만들고, 해당 이메일로 로그인하면 자동 연결됩니다." onSubmit={onCreatePerson}>
+          <FormModal title="직원 등록" desc="이메일을 기준으로 직원 정보를 만들고, 해당 이메일로 로그인하면 자동 연결됩니다." onSubmit={onCreatePerson} onClose={() => setModal(null)}>
             <label>이름<input name="name" required placeholder="홍길동" /></label>
             <label>이메일<input name="email" type="email" required placeholder="member@lupl.kr" /></label>
             <label>전화번호<input name="phone" /></label>
@@ -1434,10 +1449,10 @@ function Modal({
         )}
 
         {modal === "bonusForm" && (
-          <FormModal title="상여금·성과보상 등록" desc="프로젝트 순수익과 지급률을 입력하면 예상 상여금이 계산되어 저장됩니다." onSubmit={onCreateBonus}>
+          <FormModal title="상여금·성과보상 등록" desc="프로젝트 순수익과 지급률을 입력하면 예상 상여금이 계산되어 저장됩니다." onSubmit={onCreateBonus} onClose={() => setModal(null)}>
             <label>지급 대상<select name="person_id"><option value="">선택</option>{people.map((p) => <option value={p.id} key={p.id}>{p.name}</option>)}</select></label>
             <label>프로젝트<select name="project_id"><option value="">선택</option>{projects.map((p) => <option value={p.id} key={p.id}>{p.name}</option>)}</select></label>
-            <label>기간<input name="period_label" defaultValue="2026 Q2" /></label>
+            <label>기간<input name="period_label" placeholder="예: 2026 Q2" /></label>
             <label>순수익<input name="profit_amount" defaultValue="0" /></label>
             <label>지급률<input name="bonus_rate" defaultValue="10%" /></label>
             <label>지급 예정일<input type="date" name="planned_payment_date" /></label>
@@ -1446,7 +1461,7 @@ function Modal({
         )}
 
         {modal === "laborForm" && (
-          <FormModal title="프로젝트별 맨먼스 입력" desc="대표/본부장/책임/선임/매니저별 투입률과 맨먼스를 저장합니다." onSubmit={onCreateLabor}>
+          <FormModal title="프로젝트별 맨먼스 입력" desc="대표/본부장/책임/선임/매니저별 투입률과 맨먼스를 저장합니다." onSubmit={onCreateLabor} onClose={() => setModal(null)}>
             <label>프로젝트<select name="project_id" required>{projects.map((p) => <option value={p.id} key={p.id}>{p.name}</option>)}</select></label>
             <label>직원<select name="person_id"><option value="">선택 안 함</option>{people.map((p) => <option value={p.id} key={p.id}>{p.name}</option>)}</select></label>
             <label>직위<select name="rank">{ranks.map((rank) => <option key={rank}>{rank}</option>)}</select></label>
@@ -1457,7 +1472,7 @@ function Modal({
         )}
 
         {modal === "permissionForm" && (
-          <FormModal title="페이지별 권한 추가" desc="선택한 사람에게 특정 페이지 접근 권한을 부여합니다." onSubmit={onCreatePermission}>
+          <FormModal title="페이지별 권한 추가" desc="선택한 사람에게 특정 페이지 접근 권한을 부여합니다." onSubmit={onCreatePermission} onClose={() => setModal(null)}>
             <label>직원<select name="person_id" required>{people.map((p) => <option value={p.id} key={p.id}>{p.name}</option>)}</select></label>
             <label>페이지<select name="page_key">{menu.map((m) => <option value={pageKeyMap[m.key]} key={m.key}>{m.label}</option>)}</select></label>
             <label>권한<select name="permission"><option>보기만 가능</option><option>입력 가능</option><option>승인 가능</option><option>관리자</option></select></label>
@@ -1491,12 +1506,14 @@ function FormModal({
   title,
   desc,
   children,
-  onSubmit
+  onSubmit,
+  onClose
 }: {
   title: string;
   desc: string;
   children: React.ReactNode;
   onSubmit: (formData: FormData) => Promise<void>;
+  onClose: () => void;
 }) {
   const [busy, setBusy] = useState(false);
 
@@ -1507,6 +1524,7 @@ function FormModal({
           <h2 className="modal-title">{title}</h2>
           <p className="modal-desc">{desc}</p>
         </div>
+        <button className="modal-close" onClick={onClose} type="button">×</button>
       </div>
       <form
         className="modal-form"
@@ -1556,7 +1574,7 @@ function DetailModal({
   if (modal === "projectDetail" && selectedProject) {
     return (
       <>
-        <ModalHead title={`${selectedProject.name} 상세`} desc="프로젝트별 매출, 비용, 순이익, 마진율, 미수금, 맨먼스를 한눈에 봅니다." />
+        <ModalHead title={`${selectedProject.name} 상세`} desc="프로젝트별 매출, 비용, 순이익, 마진율, 미수금, 맨먼스를 한눈에 봅니다." onClose={onClose} />
         <div className="modal-info">
           <Info label="카테고리" value={selectedProject.category} />
           <Info label="거래처/기관" value={selectedProject.client_name || "-"} />
@@ -1586,7 +1604,7 @@ function DetailModal({
 
     return (
       <>
-        <ModalHead title={`${selectedPerson.name} 상세`} desc="직원별 연봉, 인상률, 지원사업, 상여금, 투입 프로젝트, 권한 범위를 관리합니다." />
+        <ModalHead title={`${selectedPerson.name} 상세`} desc="직원별 연봉, 인상률, 지원사업, 상여금, 투입 프로젝트, 권한 범위를 관리합니다." onClose={onClose} />
         <div className="modal-info">
           <Info label="기본정보" value={`${selectedPerson.rank} · ${selectedPerson.email || "-"}`} />
           <Info label="입사일" value={selectedPerson.hire_date || "-"} />
@@ -1610,7 +1628,7 @@ function DetailModal({
     const linkedProject = projects.find((project) => project.id === selectedExpense.project_id);
     return (
       <>
-        <ModalHead title={selectedExpense.purpose} desc="지출결의 상세 내용입니다. 증빙, 이체, 분류를 확인하고 승인할 수 있습니다." />
+        <ModalHead title={selectedExpense.purpose} desc="지출결의 상세 내용입니다. 증빙, 이체, 분류를 확인하고 승인할 수 있습니다." onClose={onClose} />
         <div className="modal-info">
           <Info label="사용일" value={selectedExpense.used_at} />
           <Info label="사용 금액" value={formatWon(selectedExpense.amount)} />
@@ -1632,7 +1650,7 @@ function DetailModal({
 
   return (
     <>
-      <ModalHead title={selectedReview?.title || "상세"} desc={selectedReview?.reason || "상세 정보를 확인합니다."} />
+      <ModalHead title={selectedReview?.title || "상세"} desc={selectedReview?.reason || "상세 정보를 확인합니다."} onClose={onClose} />
       <div className="modal-info">
         <Info label="영역" value={selectedReview?.area || "-"} />
         <Info label="영향" value={selectedReview?.amount_or_impact || "-"} />
@@ -1667,13 +1685,14 @@ function ReviewActions({
   );
 }
 
-function ModalHead({ title, desc }: { title: string; desc: string }) {
+function ModalHead({ title, desc, onClose }: { title: string; desc: string; onClose: () => void }) {
   return (
     <div className="modal-head">
       <div>
         <h2 className="modal-title">{title}</h2>
         <p className="modal-desc">{desc}</p>
       </div>
+      <button className="modal-close" onClick={onClose} type="button">×</button>
     </div>
   );
 }
@@ -1799,6 +1818,10 @@ function CashFlowChart({ cash }: { cash: CashSnapshot[] }) {
   const items = cash.slice(0, 6).reverse();
   const maxValue = Math.max(...items.flatMap((item) => [Number(item.revenue || 0), Number(item.expense || 0), Math.abs(Number(item.net_burn || 0))]), 1);
 
+  if (items.length === 0) {
+    return <p style={{ color: "var(--muted)", fontSize: 14, marginTop: 8 }}>등록된 현금 스냅샷이 없습니다.</p>;
+  }
+
   return (
     <div className="cash-chart">
       {items.map((item) => (
@@ -1819,6 +1842,10 @@ function CashFlowChart({ cash }: { cash: CashSnapshot[] }) {
 function ProfitMap({ projects }: { projects: BusinessProject[] }) {
   const items = projects.slice(0, 4);
   const maxRevenue = Math.max(...items.map((item) => Number(item.revenue || 0)), 1);
+
+  if (items.length === 0) {
+    return <p style={{ color: "var(--muted)", fontSize: 14, marginTop: 8 }}>등록된 프로젝트가 없습니다.</p>;
+  }
 
   return (
     <div className="profit-map">
@@ -1885,3 +1912,6 @@ function OrgNode({ title, copy }: { title: string; copy: string }) {
     </div>
   );
 }
+
+// unused import guard
+void reviewStatuses;
