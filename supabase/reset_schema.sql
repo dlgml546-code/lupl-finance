@@ -1,4 +1,31 @@
 -- ============================================================
+-- LUPL 경영관리 대시보드 초기화 후 재설치
+-- 이미 테스트용 테이블을 만들었다가 꼬였을 때만 실행하세요.
+-- 기존 LUPL 대시보드 데이터가 삭제됩니다.
+-- ============================================================
+
+drop table if exists public.project_labor_allocations cascade;
+drop table if exists public.bonus_payments cascade;
+drop table if exists public.compensation_reviews cascade;
+drop table if exists public.review_items cascade;
+drop table if exists public.expense_requests cascade;
+drop table if exists public.business_projects cascade;
+drop table if exists public.page_permissions cascade;
+drop table if exists public.people cascade;
+drop table if exists public.departments cascade;
+drop table if exists public.cash_snapshots cascade;
+
+delete from storage.objects where bucket_id = 'receipts';
+delete from storage.buckets where id = 'receipts';
+
+drop type if exists public.expense_category cascade;
+drop type if exists public.business_category cascade;
+drop type if exists public.permission_level cascade;
+drop type if exists public.review_status cascade;
+drop type if exists public.department_name cascade;
+drop type if exists public.lupl_rank cascade;
+
+-- ============================================================
 -- LUPL 경영관리 대시보드 실제 작동용 Supabase Schema
 -- 노션 연동 제외, Supabase Auth/DB/Storage/Edge Function 연동 기준
 -- ============================================================

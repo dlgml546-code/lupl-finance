@@ -1,86 +1,102 @@
-# LUPL 경영관리 대시보드
+# LUPL 경영관리 대시보드 Working Version
 
-러플 경영관리 대시보드 최종 개발용 프로젝트입니다.
+이번 버전은 노션 연동을 제외하고, Supabase 기준으로 실제 저장·조회·수정이 작동하도록 만든 버전입니다.
 
-## 포함 기능
+## 실제 작동하는 기능
 
-- 경영현황
-- 대표 검토함
-- 지출결의
-- 사업·매출관리
-- 인건비·보상
-- 인력투입·매출분석
-- 조직·권한관리
-- Supabase DB 스키마
-- Vercel 배포 설정
+- Supabase Auth 로그인/회원가입
+- 첫 번째 가입자 자동 `대표` 등록
+- 직원 정보 등록
+- 이메일 기준 직원 초대/연결
+- 페이지별 권한 설정
+- 경영현황 데이터 조회
+- 대표 검토함 조회 및 승인/보류/수정요청 처리
+- 지출결의 등록
+- 영수증 파일 Supabase Storage 업로드
+- OCR Edge Function 연동 코드 포함
+- 사업·매출 프로젝트 생성
+- 프로젝트별 매출·비용·순이익·마진율 조회
+- 직원별 연봉/인건비 상세
+- 상여금·성과보상 등록
+- 프로젝트별 맨먼스 등록
+- 프로젝트별 직위 투입률 그래프
+- 조직도/권한관리
 
-## 배포 순서
+## 아직 제외한 것
 
-### 1. GitHub 업로드
+- Notion 연동
 
-압축을 풀고 폴더 전체를 GitHub 저장소에 업로드합니다.
+## 1. Supabase SQL 실행
 
-### 2. Supabase 설정
-
-Supabase 프로젝트를 만들고 SQL Editor에서 아래 파일을 실행합니다.
+Supabase Dashboard → SQL Editor에서 아래 파일을 전체 실행합니다.
 
 ```text
 supabase/schema.sql
 ```
 
-### 3. Vercel 배포
+## 2. Supabase Auth 설정
 
-Vercel에서 GitHub 저장소를 Import합니다.
+Supabase Dashboard → Authentication → Providers → Email 활성화
 
-Build Command:
+개발 중에는 이메일 인증을 끄면 바로 로그인 테스트가 편합니다.
 
 ```text
+Authentication
+→ Providers
+→ Email
+→ Confirm email 끄기
+```
+
+## 3. Supabase Edge Function 배포
+
+OCR까지 쓰려면 Supabase CLI에서 실행합니다.
+
+```bash
+supabase functions deploy receipt-ocr
+```
+
+그리고 Secret을 넣습니다.
+
+```bash
+supabase secrets set OPENAI_API_KEY=본인_OPENAI_API_KEY
+supabase secrets set SUPABASE_SERVICE_ROLE_KEY=본인_SUPABASE_SERVICE_ROLE_KEY
+supabase secrets set OCR_MODEL=gpt-4o-mini
+```
+
+OCR을 당장 안 쓸 거면 이 단계는 건너뛰어도 지출결의 저장과 파일 업로드는 됩니다.
+
+## 4. Vercel 환경변수
+
+Vercel → Project → Settings → Environment Variables
+
+```text
+VITE_SUPABASE_URL=Supabase Project URL
+VITE_SUPABASE_ANON_KEY=Supabase anon public key
+```
+
+이번 버전은 데모모드가 없습니다.
+환경변수를 넣어야 실제 작동합니다.
+
+## 5. GitHub/Vercel 배포
+
+```bash
+npm install
 npm run build
 ```
 
-Output Directory:
+Vercel 설정:
 
 ```text
-dist
+Build Command: npm run build
+Output Directory: dist
 ```
 
-### 4. 환경변수 설정
+## 6. 첫 로그인
 
-Vercel Project Settings → Environment Variables에 아래 값을 추가합니다.
+첫 번째로 가입/로그인하는 계정은 자동으로 `대표` 권한이 됩니다.
+그 이후 직원은 조직·권한관리에서 이메일로 직원 정보를 먼저 등록한 뒤, 해당 이메일로 로그인하면 연결됩니다.
 
-```text
-VITE_SUPABASE_URL
-VITE_SUPABASE_ANON_KEY
-VITE_USE_DEMO_MODE
-```
+## 7. 권한 구조
 
-처음 확인용으로는 아래처럼 둬도 됩니다.
-
-```text
-VITE_USE_DEMO_MODE=true
-```
-
-Supabase Auth를 실제로 붙일 때는 `false`로 바꾸면 됩니다.
-
-## 권한 구조
-
-기본 지휘체계는 아래 기준입니다.
-
-```text
-대표 → 본부장 → 책임 → 선임 → 매니저
-```
-
-페이지별 권한은 Supabase 테이블 `page_permissions`에서 관리합니다.
-
-- 보기만 가능
-- 입력 가능
-- 승인 가능
-- 관리자
-
-## 다음 개발 단계
-
-1. Supabase Auth 로그인 연결
-2. 지출결의 파일 업로드 Storage 연결
-3. 영수증 OCR Edge Function 연결
-4. Notion 지출결의 DB 단방향 가져오기
-5. 대표 검토함 승인/보류/수정요청 실제 저장
+대표와 본부장은 기본 전체 접근입니다.
+책임/선임/매니저는 `page_permissions`에 등록된 페이지를 볼 수 있습니다.
