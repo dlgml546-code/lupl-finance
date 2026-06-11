@@ -426,11 +426,13 @@ button { -webkit-tap-highlight-color: transparent; }
 }
 
 .hero-value {
-  font-size: clamp(34px, 3vw, 48px);
+  font-size: clamp(26px, 3vw, 44px);
   line-height: 1.1;
   font-weight: 740;
-  letter-spacing: -0.055em;
+  letter-spacing: -0.05em;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   color: #172033;
 }
 
@@ -469,7 +471,7 @@ button { -webkit-tap-highlight-color: transparent; }
 .hero-mini strong {
   display: block;
   color: var(--ink);
-  font-size: 16px;
+  font-size: 14px;
   font-weight: 700;
   white-space: nowrap;
   overflow: hidden;
@@ -496,15 +498,16 @@ button { -webkit-tap-highlight-color: transparent; }
 }
 
 .kpi-value {
-  font-size: clamp(25px, 1.9vw, 33px);
-  line-height: 1.12;
+  font-size: clamp(18px, 1.9vw, 30px);
+  line-height: 1.15;
   font-weight: 690;
-  letter-spacing: -0.055em;
+  letter-spacing: -0.045em;
   white-space: nowrap;
   overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-.resource-kpi .kpi-value { font-size: 27px; }
+.resource-kpi .kpi-value { font-size: 24px; }
 
 .chip {
   display: inline-flex;
@@ -807,7 +810,7 @@ tr.muted-row td { opacity: .65; }
 }
 
 .table-scroll { overflow-x: auto; }
-.table-scroll table { min-width: 980px; }
+.table-scroll table { min-width: 1060px; }
 
 .metric-list { display: grid; gap: 12px; }
 
