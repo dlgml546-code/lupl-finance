@@ -1724,3 +1724,83 @@ input:focus, select:focus, textarea:focus {
     grid-template-columns: 1fr;
   }
 }
+
+
+/* v5 fixes */
+.action-panel {
+  margin-bottom: 28px;
+  overflow: visible;
+}
+
+.org-action-panel {
+  margin-bottom: 32px;
+}
+
+.section > .card + .card,
+.section > .card + .grid,
+.section > .grid + .card,
+.section > .quick-actions + .card {
+  margin-top: 24px;
+}
+
+.quick-actions.no-margin,
+.quick-actions.quick-two.no-margin {
+  margin-bottom: 0;
+}
+
+.check-label {
+  display: flex !important;
+  grid-template-columns: none !important;
+  align-items: center !important;
+  gap: 10px !important;
+  min-height: 44px;
+  padding: 0 4px;
+  white-space: nowrap;
+}
+
+.check-label input {
+  width: 18px !important;
+  min-width: 18px !important;
+  height: 18px !important;
+  padding: 0 !important;
+  accent-color: #5b8def;
+}
+
+.money-input {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.modal.active {
+  pointer-events: auto;
+}
+
+.modal-card {
+  overscroll-behavior: contain;
+}
+
+.modal-form label {
+  min-width: 0;
+}
+
+.modal-form input,
+.modal-form select,
+.modal-form textarea {
+  min-width: 0;
+}
+
+.form-help {
+  padding: 14px 16px;
+  border-radius: 16px;
+  background: rgba(91, 141, 239, 0.08);
+  color: #3e6ebd;
+  font-size: 13px;
+  line-height: 1.5;
+  word-break: keep-all;
+}
+
+@media (min-width: 1321px) {
+  .compensation-layout {
+    grid-template-columns: minmax(0, 1.05fr) minmax(420px, 0.95fr);
+  }
+}

@@ -120,6 +120,40 @@ const pageKeyMap: Record<SectionKey, string> = {
 // 외주용역 기준 선택지
 const clientTypes: ClientType[] = ["일반학교", "특수학교", "공공기관", "기업", "비영리재단"];
 const projectGroups: ProjectGroup[] = ["교육", "문서작업", "홈페이지", "메타버스", "마케팅", "행사", "전시", "영상", "제품 제작", "디자인", "광고/홍보"];
+
+const projectCategoryTree: Record<string, Record<string, string[]>> = {
+  "교육": {
+    "AI 교육": ["특수학교 정규수업", "기관 워크숍", "교사 연수", "캠프"],
+    "예술교육": ["미술", "음악", "영상", "융합"],
+    "접근성 교육": ["시각장애", "청각장애", "지체장애", "발달장애"]
+  },
+  "전시": {
+    "기획전": ["특수학교 전시", "작가전", "기관 협력전"],
+    "미디어아트": ["AI 영상", "인터랙티브", "프로젝션"],
+    "판매전": ["굿즈", "작품 판매", "팝업"]
+  },
+  "행사": {
+    "대회": ["사생대회", "공모전", "캠페인"],
+    "운영": ["부스", "체험행사", "시상식"],
+    "홍보": ["보도자료", "SNS 캠페인", "촬영"]
+  },
+  "연구": {
+    "연구용역": ["FGI", "접근성 연구", "매뉴얼"],
+    "컨설팅": ["사업기획", "평가", "자문"]
+  },
+  "개발": {
+    "웹서비스": ["대시보드", "플랫폼", "자동화"],
+    "AI 도구": ["OCR", "프롬프트", "API 연동"]
+  },
+  "디자인": {
+    "콘텐츠": ["카드뉴스", "교재", "홍보물"],
+    "상품": ["굿즈", "패키지", "시제품"]
+  },
+  "기타": {
+    "기타": ["기타"]
+  }
+};
+
 const projectStatuses: ProjectStatus[] = ["접수", "제안/견적", "컨펌 대기", "진행 중", "납품 완료", "정산 대기", "정산 완료", "보류/드롭"];
 const receiptStatuses: ReceiptStatus[] = ["미청구", "청구 완료", "일부 수령", "수령 완료", "보류"];
 const inflowRoutes = ["학교장터", "나라장터", "소개", "기존 고객", "직접 문의", "기타"];
@@ -127,7 +161,7 @@ const inflowRoutes = ["학교장터", "나라장터", "소개", "기존 고객",
 // 지출결의 기준 선택지
 const expenseUsages: ExpenseUsage[] = ["여비·출장비", "업무 추진비", "내부 사업비", "외부 사업비(외주용역)", "복리후생비", "운영비", "차량비", "홍보비(광고비)", "자산취득비(비품 구입 등)"];
 const paymentMethods: PaymentMethod[] = ["계좌이체", "현금", "카드", "네이버페이-현금", "기타결제 - 비즈머니 충전", "기타결제 - 와우프레스 충전"];
-const transferStatuses: TransferStatus[] = ["이체 필요", "결제 필요", "이체 필요(이희은)", "이체필요(배병윤)", "이체 완료", "결제 완료"];
+const transferStatuses: TransferStatus[] = ["결제 필요", "결제 완료", "이체 완료", "해당 없음"];
 
 // 노션 기준 사용 용도별 설명 (지출결의 팝업 하단 안내)
 const usageGuide: Record<ExpenseUsage, string> = {
@@ -167,6 +201,20 @@ function parseNumber(value: FormDataEntryValue | null) {
   return Number(String(value).replace(/[^0-9.-]/g, "")) || 0;
 }
 
+function formatMoneyInputValue(value: string) {
+  const raw = value.replace(/[^0-9]/g, "");
+  return raw ? Number(raw).toLocaleString("ko-KR") : "";
+}
+
+function handleMoneyInput(event: React.FormEvent<HTMLInputElement>) {
+  const input = event.currentTarget;
+  input.value = formatMoneyInputValue(input.value);
+}
+
+function calcMonthlyCapacity(weeklyDays: number, dailyHours: number) {
+  return Math.round((weeklyDays || 0) * (dailyHours || 0) * 4.345);
+}
+
 function today() {
   return new Date().toISOString().slice(0, 10);
 }
@@ -176,7 +224,7 @@ function getPhoneLast4(phone: string | null | undefined) {
 }
 
 function normalizeEmployeeNumber(value: string) {
-  return value.trim().replace(/\s+/g, "").toUpperCase();
+  return value.replace(/[^0-9]/g, "");
 }
 
 function makeInternalEmail(employeeNumber: string) {
@@ -455,10 +503,16 @@ export default function App() {
   // 16,17번: 프로젝트 생성 - 상태 선택, 매출=확정금액, 비용은 지출결의 자동집계 + 책임자/연락처 등 외주용역 필드
   async function createProject(formData: FormData) {
     try {
-      const groups = formData.getAll("project_group").map((g) => String(g)) as ProjectGroup[];
+      const major = String(formData.get("project_major_category") || "");
+      const middle = String(formData.get("project_middle_category") || "");
+      const small = String(formData.get("project_small_category") || "");
+      const groups = [major, middle, small].filter(Boolean) as ProjectGroup[];
       const payload = {
         name: String(formData.get("name") || ""),
         client_type: (String(formData.get("client_type") || "") || null) as ClientType | null,
+        project_major_category: major || null,
+        project_middle_category: middle || null,
+        project_small_category: small || null,
         project_group: groups.length ? groups : null,
         client_name: String(formData.get("client_name") || "") || null,
         status: String(formData.get("status") || "접수") as ProjectStatus,
@@ -467,6 +521,7 @@ export default function App() {
         cost: 0,
         receipt_status: (String(formData.get("receipt_status") || "미청구") || null) as ReceiptStatus | null,
         owner_label: String(formData.get("owner_label") || "") || null,
+        operator_label: String(formData.get("operator_label") || "") || null,
         contact: String(formData.get("contact") || "") || null,
         inflow_route: String(formData.get("inflow_route") || "") || null,
         payment_due_date: String(formData.get("payment_due_date") || "") || null,
@@ -510,12 +565,16 @@ export default function App() {
       if (file && file.size > 0) {
         storagePath = `${currentPerson?.id || "unknown"}/${Date.now()}-${file.name}`;
         const { error: uploadError } = await supabase.storage.from("receipts").upload(storagePath, file, { upsert: true });
-        if (uploadError) throw uploadError;
+        if (uploadError) {
+          console.warn("receipt upload skipped", uploadError);
+          showToast("영수증 파일 저장은 실패했지만 지출결의는 저장합니다. Storage 설정을 확인하세요.", "warn");
+          storagePath = null;
+        } else {
+          const { data: signed } = await supabase.storage.from("receipts").createSignedUrl(storagePath, 60 * 60 * 24 * 7);
+          fileUrl = signed?.signedUrl || null;
+        }
 
-        const { data: signed } = await supabase.storage.from("receipts").createSignedUrl(storagePath, 60 * 60 * 24 * 7);
-        fileUrl = signed?.signedUrl || null;
-
-        try {
+        if (storagePath) try {
           const { data: ocrData, error: ocrError } = await supabase.functions.invoke("receipt-ocr", {
             body: { storagePath }
           });
@@ -539,7 +598,7 @@ export default function App() {
         card_id: String(formData.get("card_id") || "") || null,
         amount: parseNumber(formData.get("amount")) || Number(ocrResult?.total_amount || 0),
         evidence_status: fileUrl ? "영수증 첨부" : "증빙 필요",
-        transfer_status: String(formData.get("transfer_status") || "결제 필요") as TransferStatus,
+        transfer_status: String(formData.get("transfer_status") || "해당 없음") as TransferStatus,
         transfer_summary: String(formData.get("transfer_summary") || "") || null,
         project_id: String(formData.get("project_id") || "") || null,
         requested_by: currentPerson?.id || null,
@@ -628,6 +687,7 @@ export default function App() {
       const personId = String(formData.get("person_id") || "") || null;
       const rawEmployeeNumber = String(formData.get("employee_number") || "");
       const employeeNumber = rawEmployeeNumber ? normalizeEmployeeNumber(rawEmployeeNumber) : null;
+      if (rawEmployeeNumber && employeeNumber !== rawEmployeeNumber.replace(/\s/g, "")) throw new Error("사번은 숫자만 입력하세요.");
       const phone = String(formData.get("phone") || "") || null;
       const emailInput = String(formData.get("email") || "").trim() || null;
       const email = emailInput || (employeeNumber ? makeInternalEmail(employeeNumber) : null);
@@ -648,7 +708,9 @@ export default function App() {
         hire_date: String(formData.get("hire_date") || "") || null,
         annual_salary: parseNumber(formData.get("annual_salary")),
         previous_annual_salary: parseNumber(formData.get("previous_annual_salary")),
-        monthly_capacity_hours: parseNumber(formData.get("monthly_capacity_hours")) || 160,
+        weekly_work_days: parseNumber(formData.get("weekly_work_days")) || 5,
+        daily_work_hours: parseNumber(formData.get("daily_work_hours")) || 8,
+        monthly_capacity_hours: parseNumber(formData.get("monthly_capacity_hours")) || calcMonthlyCapacity(parseNumber(formData.get("weekly_work_days")) || 5, parseNumber(formData.get("daily_work_hours")) || 8),
         memo: String(formData.get("memo") || ""),
         is_active: true
       };
@@ -1895,8 +1957,8 @@ function Modal({
   const close = () => setModal(null);
 
   return (
-    <div className="modal active" onClick={close}>
-      <div className="modal-card" onClick={(event) => event.stopPropagation()}>
+    <div className="modal active">
+      <div className="modal-card">
         {modal === "projectForm" && (
           <FormModal title="새 프로젝트 등록" desc="외주용역 항목 기준입니다. 비용은 연결된 지출결의에서 자동 집계되므로 입력하지 않습니다." onSubmit={onCreateProject} onClose={close}>
             <label>프로젝트 내용<input name="name" required placeholder="예: 대구성보학교 AI 창작 교육" /></label>
@@ -1904,23 +1966,17 @@ function Modal({
             <label>거래처 구분<select name="client_type"><option value="">선택</option>{clientTypes.map((c) => <option key={c}>{c}</option>)}</select></label>
             <label>상태<select name="status" defaultValue="접수">{projectStatuses.map((s) => <option key={s}>{s}</option>)}</select></label>
             <label>책임자<select name="owner_label"><option value="">선택</option>{people.map((p) => <option key={p.id} value={p.name}>{p.name}</option>)}</select></label>
+            <label>실무 담당자<select name="operator_label"><option value="">선택</option>{people.map((p) => <option key={p.id} value={p.name}>{p.name}</option>)}</select></label>
             <label>유입 경로<select name="inflow_route"><option value="">선택</option>{inflowRoutes.map((r) => <option key={r}>{r}</option>)}</select></label>
-            <label>확정 금액(견적·계약 총액)<input name="confirmed_amount" defaultValue="0" /></label>
-            <label>수령 금액(실입금)<input name="received_amount" defaultValue="0" /></label>
+            <label>확정 금액(견적·계약 총액)<input className="money-input" name="confirmed_amount" defaultValue="0" onInput={handleMoneyInput} /></label>
+            <label>수령 금액(실입금)<input className="money-input" name="received_amount" defaultValue="0" onInput={handleMoneyInput} /></label>
             <label>대금 수령 상태<select name="receipt_status" defaultValue="미청구">{receiptStatuses.map((r) => <option key={r}>{r}</option>)}</select></label>
             <label>실무 담당자 연락처<input name="contact" placeholder="전화/메일" /></label>
             <label>입금 예정일<input type="date" name="payment_due_date" /></label>
             <label>마감 날짜<input type="date" name="due_date" /></label>
             <label>세금계산서 발행일<input type="date" name="tax_invoice_date" /></label>
-            <label className="check-label"><input type="checkbox" name="repeat_client" /> 반복 가능 고객</label>
-            <fieldset className="wide chip-fieldset">
-              <legend>대분류(복수 선택)</legend>
-              <div className="chip-choices">
-                {projectGroups.map((g) => (
-                  <label key={g} className="chip-choice"><input type="checkbox" name="project_group" value={g} />{g}</label>
-                ))}
-              </div>
-            </fieldset>
+            <label className="check-label"><input type="checkbox" name="repeat_client" /><span>반복 가능 고객</span></label>
+            <ProjectCategoryFields />
             <label className="wide">비고/메모<textarea name="memo" /></label>
           </FormModal>
         )}
@@ -1950,15 +2006,15 @@ function Modal({
           >
             <input type="hidden" name="person_id" value={selectedPerson?.id || ""} />
             <label>이름<input name="name" required defaultValue={selectedPerson?.name || ""} placeholder="홍길동" /></label>
-            <label>사번<input name="employee_number" required={!selectedPerson} defaultValue={selectedPerson?.employee_number || ""} placeholder="LUPL-001" /></label>
+            <label>사번<input name="employee_number" inputMode="numeric" pattern="[0-9]*" required={!selectedPerson} defaultValue={selectedPerson?.employee_number || ""} placeholder="20220612001" /></label>
             <label>이메일<span className="field-hint">관리자는 이메일·사번 모두 사용 가능</span><input name="email" type="email" defaultValue={selectedPerson?.email || ""} placeholder="member@lupl.kr" /></label>
             <label>휴대전화<input name="phone" defaultValue={selectedPerson?.phone || ""} placeholder="010-0000-1234" /></label>
             <label>직위<select name="rank" defaultValue={selectedPerson?.rank || "매니저"}>{ranks.map((rank) => <option key={rank}>{rank}</option>)}</select></label>
             <label>부서<select name="department_id" defaultValue={selectedPerson?.department_id || ""}><option value="">선택 안 함</option>{departments.map((d) => <option value={d.id} key={d.id}>{d.name}</option>)}</select></label>
             <label>입사일<input type="date" name="hire_date" defaultValue={selectedPerson?.hire_date || ""} /></label>
-            <label>계약연봉<input name="annual_salary" defaultValue={selectedPerson?.annual_salary || 0} /></label>
-            <label>전년도 연봉<input name="previous_annual_salary" defaultValue={selectedPerson?.previous_annual_salary || 0} /></label>
-            <label>월 가용시간<input name="monthly_capacity_hours" defaultValue={selectedPerson?.monthly_capacity_hours || 160} /></label>
+            <label>계약연봉<input className="money-input" name="annual_salary" defaultValue={formatMoneyInputValue(String(selectedPerson?.annual_salary || ""))} onInput={handleMoneyInput} /></label>
+            <label>전년도 연봉<input className="money-input" name="previous_annual_salary" defaultValue={formatMoneyInputValue(String(selectedPerson?.previous_annual_salary || ""))} onInput={handleMoneyInput} /></label>
+            <CapacityFields person={selectedPerson} />
             {selectedPerson?.id === currentPerson.id && (
               <label className="wide">새 비밀번호<span className="field-hint">입력한 경우에만 변경됩니다. 비밀번호는 평문으로 저장하지 않습니다.</span><input name="new_password" type="password" minLength={6} placeholder="새 비밀번호" /></label>
             )}
@@ -2276,6 +2332,66 @@ function CardManage({
           </div>
         ))}
       </div>
+    </>
+  );
+}
+
+
+function ProjectCategoryFields() {
+  const majors = Object.keys(projectCategoryTree);
+  const [major, setMajor] = useState(majors[0] || "기타");
+  const middles = Object.keys(projectCategoryTree[major] || {});
+  const [middle, setMiddle] = useState(middles[0] || "기타");
+  const smalls = projectCategoryTree[major]?.[middle] || ["기타"];
+  const [small, setSmall] = useState(smalls[0] || "기타");
+
+  useEffect(() => {
+    const nextMiddle = Object.keys(projectCategoryTree[major] || {})[0] || "기타";
+    setMiddle(nextMiddle);
+    setSmall((projectCategoryTree[major]?.[nextMiddle] || ["기타"])[0] || "기타");
+  }, [major]);
+
+  useEffect(() => {
+    setSmall((projectCategoryTree[major]?.[middle] || ["기타"])[0] || "기타");
+  }, [middle, major]);
+
+  return (
+    <>
+      <label>대분류
+        <select name="project_major_category" value={major} onChange={(e) => setMajor(e.target.value)}>
+          {majors.map((item) => <option key={item}>{item}</option>)}
+        </select>
+      </label>
+      <label>중분류
+        <select name="project_middle_category" value={middle} onChange={(e) => setMiddle(e.target.value)}>
+          {middles.map((item) => <option key={item}>{item}</option>)}
+        </select>
+      </label>
+      <label>소분류
+        <select name="project_small_category" value={small} onChange={(e) => setSmall(e.target.value)}>
+          {smalls.map((item) => <option key={item}>{item}</option>)}
+        </select>
+      </label>
+    </>
+  );
+}
+
+function CapacityFields({ person }: { person: Person | null }) {
+  const [days, setDays] = useState(Number(person?.weekly_work_days || 5));
+  const [hours, setHours] = useState(Number(person?.daily_work_hours || 8));
+  const monthly = calcMonthlyCapacity(days, hours);
+
+  return (
+    <>
+      <label>주 근무일
+        <input name="weekly_work_days" type="number" min="1" max="7" step="0.5" value={days} onChange={(e) => setDays(Number(e.target.value))} />
+      </label>
+      <label>일 근무시간
+        <input name="daily_work_hours" type="number" min="1" max="24" step="0.5" value={hours} onChange={(e) => setHours(Number(e.target.value))} />
+      </label>
+      <label>월 가용시간
+        <input name="monthly_capacity_hours" readOnly value={monthly} />
+      </label>
     </>
   );
 }

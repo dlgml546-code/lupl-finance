@@ -46,7 +46,9 @@ create table if not exists public.people (
   rank public.lupl_rank not null default '매니저',
   hire_date date,
   weekly_work_hours numeric(5,2) default 40,
-  monthly_capacity_hours numeric(6,2) default 160,
+  weekly_work_days numeric(4,1) default 5,
+  daily_work_hours numeric(4,1) default 8,
+  monthly_capacity_hours numeric(6,2) default 174,
   annual_salary numeric(14,0) default 0,
   previous_annual_salary numeric(14,0) default 0,
   is_active boolean not null default true,
@@ -71,6 +73,13 @@ create table if not exists public.page_permissions (
 -- 직원 사번 로그인/비밀번호 변경 상태 컬럼 보정
 alter table if exists public.people add column if not exists employee_number text;
 alter table if exists public.people add column if not exists password_changed_at timestamptz;
+alter table if exists public.people add column if not exists weekly_work_days numeric(4,1) default 5;
+alter table if exists public.people add column if not exists daily_work_hours numeric(4,1) default 8;
+alter table if exists public.business_projects add column if not exists project_major_category text;
+alter table if exists public.business_projects add column if not exists project_middle_category text;
+alter table if exists public.business_projects add column if not exists project_small_category text;
+alter table if exists public.business_projects add column if not exists operator_label text;
+
 do $$
 begin
   if not exists (
@@ -107,7 +116,10 @@ create table if not exists public.business_projects (
   id uuid primary key default gen_random_uuid(),
   name text not null,
   client_type text,                 -- 일반학교/특수학교/공공기관/기업/비영리재단
-  project_group text[],             -- 대분류(복수)
+  project_group text[],             -- 기존 호환용 분류 배열
+  project_major_category text,       -- 대분류
+  project_middle_category text,      -- 중분류
+  project_small_category text,       -- 소분류
   client_name text,
   status text not null default '접수',
   confirmed_amount numeric(14,0) not null default 0,   -- 확정 금액(매출)
@@ -115,6 +127,7 @@ create table if not exists public.business_projects (
   cost numeric(14,0) not null default 0,               -- 수기 비용(자동집계와 별도)
   receipt_status text,              -- 미청구/청구완료/일부수령/수령완료/보류
   owner_label text,                 -- 책임자(이름)
+  operator_label text,              -- 실무 담당자 이름
   contact text,                     -- 실무 담당자 연락처
   inflow_route text,                -- 유입 경로
   man_months numeric(8,3) default 0,
@@ -269,6 +282,13 @@ insert into public.payment_cards (label, card_type, owner_name, sort_order) valu
 on conflict do nothing;
 
 -- 노션 기준 카테고리 시드
+
+insert into public.payment_cards (label, card_type, owner_name, sort_order)
+values
+('법인카드', '법인', null, 1),
+('개인카드-이희은', '개인', '이희은', 2)
+on conflict do nothing;
+
 insert into public.expense_categories (name, description, sort_order) values
 ('여비·출장비','여행·출장 중 식대·다과·유류비·주차·택시·숙박',1),
 ('업무 추진비','외부 미팅 식대·다과',2),

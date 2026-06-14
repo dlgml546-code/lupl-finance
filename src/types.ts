@@ -26,12 +26,10 @@ export type PaymentMethod =
 
 // 이체 여부 (노션 기준)
 export type TransferStatus =
-  | "이체 필요"
   | "결제 필요"
-  | "이체 필요(이희은)"
-  | "이체필요(배병윤)"
+  | "결제 완료"
   | "이체 완료"
-  | "결제 완료";
+  | "해당 없음";
 
 // 외주용역 프로젝트 거래처 구분
 export type ClientType = "일반학교" | "특수학교" | "공공기관" | "기업" | "비영리재단";
@@ -63,6 +61,8 @@ export type Person = {
   rank: Rank;
   hire_date: string | null;
   weekly_work_hours: number | null;
+  weekly_work_days: number | null;
+  daily_work_hours: number | null;
   monthly_capacity_hours: number | null;
   annual_salary: number | null;
   previous_annual_salary: number | null;
@@ -101,6 +101,9 @@ export type BusinessProject = {
   name: string;
   client_type: ClientType | null;
   project_group: ProjectGroup[] | null;
+  project_major_category: string | null;
+  project_middle_category: string | null;
+  project_small_category: string | null;
   client_name: string | null;
   status: ProjectStatus;
   confirmed_amount: number;     // 확정 금액(견적/계약 총액)
@@ -108,6 +111,7 @@ export type BusinessProject = {
   cost: number;                 // 집행 비용(지출결의 자동 집계 + 수기)
   receipt_status: ReceiptStatus | null;
   owner_label: string | null;   // 책임자(이름 텍스트)
+  operator_label: string | null; // 실무 담당자 이름
   contact: string | null;       // 실무 담당자 연락처
   inflow_route: string | null;  // 유입 경로
   man_months: number | null;
