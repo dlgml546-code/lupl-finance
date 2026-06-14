@@ -171,6 +171,23 @@ function today() {
   return new Date().toISOString().slice(0, 10);
 }
 
+function getPhoneLast4(phone: string | null | undefined) {
+  return String(phone || "").replace(/[^0-9]/g, "").slice(-4);
+}
+
+function normalizeEmployeeNumber(value: string) {
+  return value.trim().replace(/\s+/g, "").toUpperCase();
+}
+
+function makeInternalEmail(employeeNumber: string) {
+  return `${normalizeEmployeeNumber(employeeNumber).toLowerCase()}@employee.lupl.kr`;
+}
+
+function makeInitialPassword(phone: string | null | undefined) {
+  const last4 = getPhoneLast4(phone);
+  return last4.length === 4 ? `lupl${last4}` : "";
+}
+
 function formatDateTime(iso: string | null) {
   if (!iso) return "";
   const d = new Date(iso);
@@ -608,10 +625,24 @@ export default function App() {
 
   async function createPerson(formData: FormData) {
     try {
+      const personId = String(formData.get("person_id") || "") || null;
+      const rawEmployeeNumber = String(formData.get("employee_number") || "");
+      const employeeNumber = rawEmployeeNumber ? normalizeEmployeeNumber(rawEmployeeNumber) : null;
+      const phone = String(formData.get("phone") || "") || null;
+      const emailInput = String(formData.get("email") || "").trim() || null;
+      const email = emailInput || (employeeNumber ? makeInternalEmail(employeeNumber) : null);
+      const newPassword = String(formData.get("new_password") || "");
+      const isEditingSelf = Boolean(personId && currentPerson?.id === personId);
+
+      if (!personId && !employeeNumber) throw new Error("직원 등록 시 사번은 필수입니다.");
+      if (!personId && !phone) throw new Error("초기 비밀번호 생성을 위해 휴대전화 번호가 필요합니다.");
+      if (!email) throw new Error("이메일 또는 사번이 필요합니다.");
+
       const payload = {
         name: String(formData.get("name") || ""),
-        email: String(formData.get("email") || "") || null,
-        phone: String(formData.get("phone") || "") || null,
+        employee_number: employeeNumber,
+        email,
+        phone,
         rank: String(formData.get("rank") || "매니저") as Rank,
         department_id: String(formData.get("department_id") || "") || null,
         hire_date: String(formData.get("hire_date") || "") || null,
@@ -622,21 +653,49 @@ export default function App() {
         is_active: true
       };
 
-      const existing = payload.email
-        ? await supabase.from("people").select("id").eq("email", payload.email).maybeSingle()
-        : { data: null, error: null };
-
-      if (existing.error) throw existing.error;
-
-      const result = existing.data
-        ? await supabase.from("people").update(payload).eq("id", existing.data.id)
-        : await supabase.from("people").insert(payload);
+      const result = personId
+        ? await supabase.from("people").update(payload).eq("id", personId).select().single()
+        : await supabase.from("people").insert(payload).select().single();
 
       if (result.error) throw result.error;
 
-      showToast("직원 정보를 저장했습니다.");
+      const saved = result.data as Person;
+
+      if (!personId) {
+        const initialPassword = makeInitialPassword(phone);
+        if (!initialPassword) throw new Error("휴대전화 뒷번호 4자리를 확인할 수 없습니다.");
+        const { error: inviteError } = await supabase.functions.invoke("admin-create-user", {
+          body: {
+            personId: saved.id,
+            email,
+            password: initialPassword,
+            name: payload.name,
+            employeeNumber
+          }
+        });
+        if (inviteError) {
+          showToast("직원 정보는 저장됐지만 Auth 계정 생성은 Edge Function 배포 후 다시 진행해야 합니다.", "warn");
+        } else {
+          showToast(`직원 등록 완료. 초기 비밀번호는 lupl+휴대전화 뒷번호 4자리입니다.`, "ok");
+        }
+      } else {
+        showToast("직원 정보를 저장했습니다.");
+      }
+
+      if (isEditingSelf && newPassword) {
+        const { error: passwordError } = await supabase.auth.updateUser({ password: newPassword });
+        if (passwordError) throw passwordError;
+        await supabase.from("people").update({ password_changed_at: new Date().toISOString() }).eq("id", personId);
+        showToast("내 정보와 비밀번호를 변경했습니다.");
+      }
+
       setModal(null);
       await loadAll();
+
+      if (isEditingSelf) {
+        const { data: refreshed } = await supabase.from("people").select("*").eq("id", personId).maybeSingle();
+        if (refreshed) setCurrentPerson(refreshed as Person);
+      }
     } catch (error) {
       showToast(error instanceof Error ? error.message : "직원 저장 실패", "err");
     }
@@ -729,22 +788,31 @@ export default function App() {
   async function createCash(formData: FormData) {
     try {
       const monthInput = String(formData.get("snapshot_month") || today().slice(0, 7));
+      const autoRevenue = projectsComputed.reduce((sum, project) => sum + Number(project.received_amount || 0), 0) || projectsComputed.reduce((sum, project) => sum + Number(project.confirmed_amount || 0), 0);
+      const autoProjectCost = projectsComputed.reduce((sum, project) => sum + Number(project._cost || 0), 0);
+      const autoExpense = expenses.reduce((sum, expense) => sum + Number(expense.amount || 0), 0);
+      const autoPayroll = people.filter((person) => person.is_active).reduce((sum, person) => sum + Number(person.annual_salary || 0) / 12, 0);
+      const expense = autoExpense + autoPayroll || autoProjectCost;
+      const revenue = autoRevenue;
+      const receivable = projectsComputed.reduce((sum, project) => sum + Number(project._receivable || 0), 0);
+      const payable = expenses.filter((expense) => expense.review_status !== "승인").reduce((sum, expense) => sum + Number(expense.amount || 0), 0);
+      const currentCash = parseNumber(formData.get("current_cash"));
+      const netBurn = Math.max(0, expense - revenue);
       const payload = {
         snapshot_month: `${monthInput}-01`,
-        current_cash: parseNumber(formData.get("current_cash")),
-        revenue: parseNumber(formData.get("revenue")),
-        expense: parseNumber(formData.get("expense")),
-        net_burn: parseNumber(formData.get("expense")) - parseNumber(formData.get("revenue")),
-        receivable_amount: parseNumber(formData.get("receivable_amount")),
-        payable_amount: parseNumber(formData.get("payable_amount")),
-        runway_months: 0
+        current_cash: currentCash,
+        revenue,
+        expense,
+        net_burn: netBurn,
+        receivable_amount: receivable,
+        payable_amount: payable,
+        payroll_included_expense: expense,
+        runway_months: netBurn > 0 ? Math.round((currentCash / netBurn) * 10) / 10 : 0
       };
-      const monthlyBurn = payload.net_burn > 0 ? payload.net_burn : 0;
-      payload.runway_months = monthlyBurn > 0 ? Math.round((payload.current_cash / monthlyBurn) * 10) / 10 : 0;
 
       const { error } = await supabase.from("cash_snapshots").upsert(payload, { onConflict: "snapshot_month" });
       if (error) throw error;
-      showToast("현금 현황을 저장했습니다.");
+      showToast("현금 현황을 자동 계산 기준으로 저장했습니다.");
       setModal(null);
       await loadAll();
     } catch (error) {
@@ -787,7 +855,8 @@ export default function App() {
     try {
       const cardType = String(formData.get("card_type") || "법인") as "법인" | "개인";
       const owner = String(formData.get("owner_name") || "") || null;
-      const label = cardType === "법인" ? "법인" : `개인-${owner || "미지정"}`;
+      const labelInput = String(formData.get("label") || "").trim();
+      const label = labelInput || (cardType === "법인" ? `법인카드-${cards.filter((c) => c.card_type === "법인").length + 1}` : `개인-${owner || "미지정"}`);
       const payload = {
         label,
         card_type: cardType,
@@ -841,11 +910,20 @@ export default function App() {
           </div>
         </div>
 
-        {/* 1번: 이름(아이디 아님) + 로그인 일시 */}
+        {/* 이름 + 로그인일시 + 내 정보 수정 */}
         <div className="user-box">
-          <strong>{currentPerson.name}</strong>
-          <span className="user-rank">{currentPerson.rank}</span>
-          {loginAt && <span className="user-login">로그인 {formatDateTime(loginAt)}</span>}
+          <div className="user-mainline">
+            <strong>{currentPerson.name}</strong>
+            {loginAt && <span className="user-login-small">로그인일시 {formatDateTime(loginAt)}</span>}
+          </div>
+          <span className="user-rank">{currentPerson.rank}{currentPerson.employee_number ? ` · ${currentPerson.employee_number}` : ""}</span>
+          <button
+            className="user-edit-btn"
+            type="button"
+            onClick={() => { setSelectedPerson(currentPerson); setModal("personForm"); }}
+          >
+            내 정보 수정
+          </button>
         </div>
 
         <div className="menu-label">메뉴</div>
@@ -896,7 +974,7 @@ export default function App() {
         </header>
 
         {section === "overview" && (
-          <Overview setSection={setSection} reviewCount={pendingReviews.length} cash={cash} projects={projectsComputed} expenses={expenses} onAddCash={() => setModal("cashForm")} />
+          <Overview setSection={setSection} reviewCount={pendingReviews.length} cash={cash} projects={projectsComputed} expenses={expenses} people={people} onAddCash={() => setModal("cashForm")} />
         )}
         {section === "review" && (
           <ReviewInbox
@@ -953,7 +1031,7 @@ export default function App() {
               setSelectedPerson(person);
               setModal("employeeDetail");
             }}
-            onCreatePerson={() => setModal("personForm")}
+            onCreatePerson={() => { setSelectedPerson(null); setModal("personForm"); }}
             onCreateBonus={() => setModal("bonusForm")}
           />
         )}
@@ -976,7 +1054,7 @@ export default function App() {
             people={people}
             departments={departments}
             permissions={permissions}
-            onCreatePerson={() => setModal("personForm")}
+            onCreatePerson={() => { setSelectedPerson(null); setModal("personForm"); }}
             onCreatePermission={() => setModal("permissionForm")}
             onOpenPerson={(person) => {
               setSelectedPerson(person);
@@ -1027,23 +1105,45 @@ function AuthScreen() {
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
 
+  async function resolveLoginEmail(identifier: string) {
+    const value = identifier.trim();
+    if (value.includes("@")) return value;
+
+    const employeeNumber = normalizeEmployeeNumber(value);
+    const { data, error } = await supabase
+      .from("people")
+      .select("email, name")
+      .eq("employee_number", employeeNumber)
+      .maybeSingle();
+
+    if (error) throw error;
+    if (!data?.email) throw new Error("등록되지 않은 사번입니다. 관리자에게 직원 등록을 요청하세요.");
+    return data.email as string;
+  }
+
   async function handleAuth(formData: FormData) {
     setBusy(true);
     setMessage("");
-    const email = String(formData.get("email") || "");
-    const password = String(formData.get("password") || "");
+    try {
+      const identifier = String(formData.get("identifier") || "");
+      const password = String(formData.get("password") || "");
 
-    const result =
-      mode === "login"
-        ? await supabase.auth.signInWithPassword({ email, password })
-        : await supabase.auth.signUp({ email, password });
-
-    if (result.error) {
-      setMessage(result.error.message);
-    } else {
-      setMessage(mode === "signup" ? "가입했습니다. 메일 확인 설정이 켜져 있으면 이메일 인증 후 로그인하세요." : "로그인했습니다.");
+      if (mode === "login") {
+        const email = await resolveLoginEmail(identifier);
+        const result = await supabase.auth.signInWithPassword({ email, password });
+        if (result.error) throw result.error;
+        setMessage("로그인했습니다.");
+      } else {
+        if (!identifier.includes("@")) throw new Error("초기 관리자 가입은 이메일로 진행하세요. 직원은 관리자가 사번으로 등록합니다.");
+        const result = await supabase.auth.signUp({ email: identifier, password });
+        if (result.error) throw result.error;
+        setMessage("가입했습니다. 메일 확인 설정이 켜져 있으면 이메일 인증 후 로그인하세요.");
+      }
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "로그인에 실패했습니다.");
+    } finally {
+      setBusy(false);
     }
-    setBusy(false);
   }
 
   return (
@@ -1051,19 +1151,19 @@ function AuthScreen() {
       <div className="auth-card">
         <div className="brand-mark">경영</div>
         <h1>러플 경영관리 대시보드</h1>
-        <p>Supabase 계정으로 로그인하면 실제 데이터가 저장됩니다.</p>
+        <p>직원은 사번과 초기 비밀번호로 로그인할 수 있습니다. 초기 비밀번호는 <strong>lupl+휴대전화 뒷번호 4자리</strong>입니다.</p>
         <form
           onSubmit={(event) => {
             event.preventDefault();
             void handleAuth(new FormData(event.currentTarget));
           }}
         >
-          <label>이메일<input name="email" type="email" required placeholder="leehuieun@lupl.kr" /></label>
-          <label>비밀번호<input name="password" type="password" required minLength={6} placeholder="6자 이상" /></label>
-          <button className="btn blue" type="submit" disabled={busy}>{mode === "login" ? "로그인" : "회원가입"}</button>
+          <label>{mode === "login" ? "사번 또는 이메일" : "관리자 이메일"}<input name="identifier" required placeholder={mode === "login" ? "LUPL-001 또는 lee@lupl.kr" : "lee@lupl.kr"} /></label>
+          <label>비밀번호<input name="password" type="password" required minLength={6} placeholder="초기 비밀번호 또는 변경한 비밀번호" /></label>
+          <button className="btn blue" type="submit" disabled={busy}>{mode === "login" ? "로그인" : "관리자 초기 가입"}</button>
         </form>
         <button className="link-btn" onClick={() => setMode(mode === "login" ? "signup" : "login")}>
-          {mode === "login" ? "처음이면 회원가입" : "이미 계정이 있으면 로그인"}
+          {mode === "login" ? "첫 관리자 계정 만들기" : "이미 계정이 있으면 로그인"}
         </button>
         {message && <div className="auth-message">{message}</div>}
       </div>
@@ -1078,6 +1178,7 @@ function Overview({
   cash,
   projects,
   expenses,
+  people,
   onAddCash
 }: {
   setSection: (key: SectionKey) => void;
@@ -1085,6 +1186,7 @@ function Overview({
   cash: CashSnapshot[];
   projects: ProjectComputed[];
   expenses: ExpenseRequest[];
+  people: Person[];
   onAddCash: () => void;
 }) {
   const latest = cash[0];
@@ -1092,12 +1194,18 @@ function Overview({
   const hasProjects = projects.length > 0;
   const hasExpenses = expenses.length > 0;
 
-  const monthlyRevenue = latest?.revenue ?? null;
-  const monthlyExpense = latest?.expense ?? null;
+  const autoRevenue = projects.reduce((s, p) => s + Number(p.received_amount || 0), 0);
+  const autoConfirmedRevenue = projects.reduce((s, p) => s + Number(p.confirmed_amount || 0), 0);
+  const autoProjectCost = projects.reduce((s, p) => s + Number(p._cost || 0), 0);
+  const autoExpense = expenses.reduce((s, e) => s + Number(e.amount || 0), 0);
+  const autoPayroll = people.filter((p) => p.is_active).reduce((s, p) => s + Number(p.annual_salary || 0) / 12, 0);
+  const monthlyRevenue = autoRevenue || autoConfirmedRevenue || latest?.revenue || 0;
+  const monthlyExpense = autoExpense + autoPayroll || latest?.expense || 0;
   const currentCash = latest?.current_cash ?? null;
-  const runway = latest?.runway_months ?? null;
-  const receivable = latest?.receivable_amount ?? (hasProjects ? projects.reduce((s, p) => s + p._receivable, 0) : null);
-  const payable = latest?.payable_amount ?? null;
+  const netBurn = Math.max(0, Number(monthlyExpense) - Number(monthlyRevenue));
+  const runway = currentCash != null && netBurn > 0 ? Math.round((Number(currentCash) / netBurn) * 10) / 10 : latest?.runway_months ?? null;
+  const receivable = projects.reduce((s, p) => s + p._receivable, 0);
+  const payable = expenses.filter((e) => e.review_status !== "승인").reduce((s, e) => s + Number(e.amount || 0), 0);
 
   return (
     <section className="section active">
@@ -1124,7 +1232,7 @@ function Overview({
               </div>
             )}
             {hasCash && (
-              <div className="hero-copy">현재 현금, 입금예정, 지급예정을 함께 봅니다. 매월 현금 현황을 입력하면 추이가 누적됩니다.</div>
+              <div className="hero-copy">현재 현금만 입력하면 매출·지출·미수금·지급예정은 프로젝트, 지출결의, 직원 연봉에서 자동 계산됩니다.</div>
             )}
           </div>
           {hasCash && (
@@ -1137,9 +1245,9 @@ function Overview({
           )}
         </div>
 
-        <KpiCard label="이번 달 매출" value={monthlyRevenue != null ? formatWon(monthlyRevenue) : "미입력"} chip={hasCash ? "현금 현황 기준" : "데이터 필요"} tone="green" empty={!hasCash} />
-        <KpiCard label="직원 월급 포함 지출" value={monthlyExpense != null ? formatWon(monthlyExpense) : "미입력"} chip={hasCash ? "현금 현황 기준" : "데이터 필요"} tone="red" empty={!hasCash} />
-        <KpiCard label="현금소진액 / Runway" value={hasCash ? formatWon(latest?.net_burn || 0) : "미입력"} chip={runway != null ? `${runway}개월` : "데이터 필요"} tone="orange" empty={!hasCash} />
+        <KpiCard label="이번 달 매출" value={monthlyRevenue != null ? formatWon(monthlyRevenue) : "미입력"} chip="자동 계산" tone="green" empty={!hasCash} />
+        <KpiCard label="직원 월급 포함 지출" value={monthlyExpense != null ? formatWon(monthlyExpense) : "미입력"} chip="자동 계산" tone="red" empty={!hasCash} />
+        <KpiCard label="현금소진액 / Runway" value={formatWon(netBurn)} chip={runway != null ? `${runway}개월` : "현재 현금 필요"} tone="orange" empty={!hasCash} />
       </div>
 
       <div className="grid two">
@@ -1366,13 +1474,21 @@ function Revenue({
 
   return (
     <section className="section active">
-      {/* 18번: 입금예정 등록 제거(프로젝트에 입금예정일 필드 내장), 19번: 카테고리 관리는 실제 카테고리 관리로 */}
-      <div className="quick-actions quick-two">
-        <QuickCard icon={<FolderPlus size={18} />} title="새 프로젝트 등록" copy="외주용역 기준 거래처·확정금액·책임자 입력" onClick={onCreate} />
-        <QuickCard icon={<Tags size={18} />} title="카테고리 관리" copy="지출/사업 분류 카테고리 추가·삭제" onClick={onManageCategory} />
+      {/* 사업관리 액션 영역: 하단 KPI 카드와 겹치지 않도록 별도 패널로 분리 */}
+      <div className="card action-panel">
+        <div className="action-panel-head">
+          <div>
+            <h2 className="card-title">사업관리 작업</h2>
+            <p className="card-sub">프로젝트 등록과 카테고리 관리를 여기에서 시작합니다.</p>
+          </div>
+        </div>
+        <div className="quick-actions quick-two no-margin">
+          <QuickCard icon={<FolderPlus size={18} />} title="새 프로젝트 등록" copy="외주용역 기준 거래처·확정금액·책임자 입력" onClick={onCreate} />
+          <QuickCard icon={<Tags size={18} />} title="카테고리 관리" copy="지출/사업 분류 카테고리 추가·삭제" onClick={onManageCategory} />
+        </div>
       </div>
 
-      <div className="grid four">
+      <div className="grid four section-gap">
         <KpiCard compact label="총 매출(확정금액)" value={formatWon(totals.revenue)} chip="누적" tone="green" empty={projects.length === 0} />
         <KpiCard compact label="총 비용" value={formatWon(totals.cost)} chip="지출결의 자동집계" tone="red" empty={projects.length === 0} />
         <KpiCard compact label="순이익" value={formatWon(totals.profit)} chip={`마진 ${totals.revenue ? Math.round((totals.profit / totals.revenue) * 100) : 0}%`} tone="blue" empty={projects.length === 0} />
@@ -1455,7 +1571,7 @@ function Compensation({
     <section className="section active">
       {/* 22번: 각 버튼이 맞는 동작을 하도록 - 직원/상여금만 별도, 나머지는 동일 직원등록 표시 제거 */}
       <div className="quick-actions quick-two">
-        <QuickCard title="직원 추가" copy="이메일 기준 직원 정보 생성" onClick={onCreatePerson} />
+        <QuickCard title="직원 추가" copy="사번 기준 직원 정보 생성" onClick={onCreatePerson} />
         <QuickCard title="상여금 추가" copy="프로젝트 순수익·지급률 기준 자동 계산" onClick={onCreateBonus} />
       </div>
 
@@ -1631,12 +1747,20 @@ function Org({
 
   return (
     <section className="section active">
-      <div className="quick-actions quick-two">
-        <QuickCard title="직원 추가" copy="이메일 기준으로 직원 등록" onClick={onCreatePerson} />
-        <QuickCard title="페이지 권한 추가" copy="선택한 사람만 페이지 접근 허용" onClick={onCreatePermission} />
+      <div className="card action-panel org-action-panel">
+        <div className="action-panel-head">
+          <div>
+            <h2 className="card-title">조직 관리 작업</h2>
+            <p className="card-sub">직원은 사번 기준으로 등록하고, 페이지별 권한은 별도로 부여합니다.</p>
+          </div>
+        </div>
+        <div className="quick-actions quick-two no-margin">
+          <QuickCard title="직원 추가" copy="사번·휴대전화 기준으로 직원 등록" onClick={onCreatePerson} />
+          <QuickCard title="페이지 권한 추가" copy="선택한 사람만 페이지 접근 허용" onClick={onCreatePermission} />
+        </div>
       </div>
 
-      <div className="card solid">
+      <div className="card solid section-gap">
         <h2 className="card-title">조직도</h2>
         <p className="card-sub">대표 → 본부장 → 각 부서, 부서별 책임·선임·매니저 아래 실제 직원이 배치됩니다. 이름을 누르면 상세가 열립니다.</p>
 
@@ -1818,17 +1942,28 @@ function Modal({
         )}
 
         {modal === "personForm" && (
-          <FormModal title="직원 등록" desc="이메일 기준으로 직원 정보를 만들고, 해당 이메일로 로그인하면 자동 연결됩니다." onSubmit={onCreatePerson} onClose={close}>
-            <label>이름<input name="name" required placeholder="홍길동" /></label>
-            <label>이메일<input name="email" type="email" required placeholder="member@lupl.kr" /></label>
-            <label>전화번호<input name="phone" /></label>
-            <label>직위<select name="rank">{ranks.map((rank) => <option key={rank}>{rank}</option>)}</select></label>
-            <label>부서<select name="department_id"><option value="">선택 안 함</option>{departments.map((d) => <option value={d.id} key={d.id}>{d.name}</option>)}</select></label>
-            <label>입사일<input type="date" name="hire_date" /></label>
-            <label>계약연봉<input name="annual_salary" defaultValue="0" /></label>
-            <label>전년도 연봉<input name="previous_annual_salary" defaultValue="0" /></label>
-            <label>월 가용시간<input name="monthly_capacity_hours" defaultValue="160" /></label>
-            <label className="wide">메모<textarea name="memo" /></label>
+          <FormModal
+            title={selectedPerson ? "직원/내 정보 수정" : "직원 등록"}
+            desc={selectedPerson ? "이름, 사번, 연락처, 연봉 정보를 수정합니다. 본인 계정은 새 비밀번호를 입력해 직접 변경할 수 있습니다." : "직원은 사번으로 등록합니다. 관리자는 이메일과 사번을 모두 입력할 수 있고, 이메일이 없으면 사번 기반 내부 로그인 계정을 생성합니다."}
+            onSubmit={onCreatePerson}
+            onClose={close}
+          >
+            <input type="hidden" name="person_id" value={selectedPerson?.id || ""} />
+            <label>이름<input name="name" required defaultValue={selectedPerson?.name || ""} placeholder="홍길동" /></label>
+            <label>사번<input name="employee_number" required={!selectedPerson} defaultValue={selectedPerson?.employee_number || ""} placeholder="LUPL-001" /></label>
+            <label>이메일<span className="field-hint">관리자는 이메일·사번 모두 사용 가능</span><input name="email" type="email" defaultValue={selectedPerson?.email || ""} placeholder="member@lupl.kr" /></label>
+            <label>휴대전화<input name="phone" defaultValue={selectedPerson?.phone || ""} placeholder="010-0000-1234" /></label>
+            <label>직위<select name="rank" defaultValue={selectedPerson?.rank || "매니저"}>{ranks.map((rank) => <option key={rank}>{rank}</option>)}</select></label>
+            <label>부서<select name="department_id" defaultValue={selectedPerson?.department_id || ""}><option value="">선택 안 함</option>{departments.map((d) => <option value={d.id} key={d.id}>{d.name}</option>)}</select></label>
+            <label>입사일<input type="date" name="hire_date" defaultValue={selectedPerson?.hire_date || ""} /></label>
+            <label>계약연봉<input name="annual_salary" defaultValue={selectedPerson?.annual_salary || 0} /></label>
+            <label>전년도 연봉<input name="previous_annual_salary" defaultValue={selectedPerson?.previous_annual_salary || 0} /></label>
+            <label>월 가용시간<input name="monthly_capacity_hours" defaultValue={selectedPerson?.monthly_capacity_hours || 160} /></label>
+            {selectedPerson?.id === currentPerson.id && (
+              <label className="wide">새 비밀번호<span className="field-hint">입력한 경우에만 변경됩니다. 비밀번호는 평문으로 저장하지 않습니다.</span><input name="new_password" type="password" minLength={6} placeholder="새 비밀번호" /></label>
+            )}
+            {!selectedPerson && <div className="form-help wide">초기 비밀번호는 lupl+휴대전화 뒷번호 4자리로 생성되며, 직원은 로그인 후 본인 정보에서 변경할 수 있습니다.</div>}
+            <label className="wide">메모<textarea name="memo" defaultValue={selectedPerson?.memo || ""} /></label>
           </FormModal>
         )}
 
@@ -1856,13 +1991,10 @@ function Modal({
         )}
 
         {modal === "cashForm" && (
-          <FormModal title="현금 현황 입력" desc="이 달의 현금·매출·지출을 입력하면 경영현황 지표와 현금흐름 추이에 반영됩니다." onSubmit={onCreateCash} onClose={close}>
+          <FormModal title="현금 현황 입력" desc="현재 현금만 입력하세요. 매출, 지출, 미수금, 지급예정은 사업·매출관리, 지출결의, 직원 연봉 데이터에서 자동 계산됩니다." onSubmit={onCreateCash} onClose={close}>
             <label>기준 월<input type="month" name="snapshot_month" defaultValue={today().slice(0, 7)} required /></label>
             <label>현재 현금<input name="current_cash" defaultValue="0" /></label>
-            <label>이번 달 매출<input name="revenue" defaultValue="0" /></label>
-            <label>이번 달 지출(월급 포함)<input name="expense" defaultValue="0" /></label>
-            <label>입금 예정(미수금)<input name="receivable_amount" defaultValue="0" /></label>
-            <label>지급 예정(미지급)<input name="payable_amount" defaultValue="0" /></label>
+            <div className="form-help wide">자동 계산 항목: 수령금액/확정금액, 지출결의 금액, 활성 직원 월급, 미수금, 미승인 지출 예정액</div>
           </FormModal>
         )}
 
@@ -2115,29 +2247,32 @@ function CardManage({
   const [cardType, setCardType] = useState<"법인" | "개인">("법인");
   return (
     <>
-      <ModalHead title="결제수단(카드) 관리" desc="법인카드와 개인카드(소유자별)를 미리 등록합니다. 지출결의에서 카드 결제 시 여기서 선택합니다." onClose={onClose} />
+      <ModalHead title="결제수단(카드) 관리" desc="카드명, 법인/개인 구분, 소유자를 등록합니다. 등록한 카드는 지출결의에서 선택할 수 있습니다." onClose={onClose} />
       <form
-        className="inline-form"
+        className="inline-form card-inline-form"
         onSubmit={async (event) => {
           event.preventDefault();
           setBusy(true);
           await onCreate(new FormData(event.currentTarget));
+          event.currentTarget.reset();
+          setCardType("법인");
           setBusy(false);
         }}
       >
+        <input name="label" placeholder="카드명 예: 법인 신한 1234" required />
         <select name="card_type" value={cardType} onChange={(e) => setCardType(e.target.value as "법인" | "개인")}>
           <option value="법인">법인</option>
           <option value="개인">개인</option>
         </select>
-        <input name="owner_name" placeholder={cardType === "개인" ? "소유자 이름(예: 이희은)" : "(법인은 비워두기)"} disabled={cardType === "법인"} />
-        <button className="btn blue" disabled={busy}>{busy ? "등록 중" : "등록"}</button>
+        <input name="owner_name" placeholder={cardType === "개인" ? "소유자 이름" : "관리자/사용자 메모"} />
+        <button className="btn blue" disabled={busy} type="submit">{busy ? "등록 중" : "등록"}</button>
       </form>
-      <div className="manage-list">
+      <div className="manage-list card-manage-list">
         {cards.length === 0 && <EmptyState text="등록된 결제수단이 없습니다." />}
         {cards.map((c) => (
           <div className="manage-row" key={c.id}>
             <div><strong>{c.label}</strong><span>{c.card_type}{c.owner_name ? ` · ${c.owner_name}` : ""}</span></div>
-            <button className="btn small ghost danger" onClick={() => onDelete(c.id)}>삭제</button>
+            <button className="btn small ghost danger" onClick={() => onDelete(c.id)} type="button">삭제</button>
           </div>
         ))}
       </div>
@@ -2251,6 +2386,7 @@ function DetailModal({
         <ModalHead title={`${selectedPerson.name} 상세`} desc="직원별 연봉, 인상률, 지원사업, 상여금, 투입 프로젝트를 봅니다." onClose={onClose} />
         <div className="modal-info">
           <Info label="기본정보" value={`${selectedPerson.rank} · ${selectedPerson.email || "-"}`} />
+          <Info label="사번" value={selectedPerson.employee_number || "미등록"} />
           <Info label="입사일" value={selectedPerson.hire_date || "-"} />
           <Info label="계약연봉" value={formatWon(selectedPerson.annual_salary)} />
           <Info label="전년도 연봉" value={formatWon(selectedPerson.previous_annual_salary)} />
@@ -2260,6 +2396,7 @@ function DetailModal({
           <Info label="지원사업 연결" value={review?.grant_program_name || "미등록"} />
           <Info label="상여금 현황" value={`${personBonuses.length}건 · ${formatWon(personBonuses.reduce((s, b) => s + Number(b.bonus_amount || 0), 0))}`} />
           <Info label="투입 프로젝트" value={`${personLabor.length}건 · ${personLabor.reduce((s, l) => s + Number(l.man_months || 0), 0).toFixed(2)}MM`} />
+          <Info label="비밀번호 변경" value={selectedPerson.password_changed_at ? formatDateTime(selectedPerson.password_changed_at) : "초기 비밀번호 사용 가능"} />
         </div>
         <ReviewActions selectedReview={selectedReview} onClose={onClose} onReviewStatus={onReviewStatus} />
       </>

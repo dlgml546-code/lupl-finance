@@ -1636,3 +1636,91 @@ input:focus, select:focus, textarea:focus {
   .proj-bar-row { grid-template-columns: 90px 1fr 90px; gap: 8px; }
   .proj-bar-label, .proj-bar-value { font-size: 11px; }
 }
+
+/* v4 개선: 상단 작업 패널 분리 */
+.action-panel {
+  margin-bottom: 26px;
+  padding: 22px;
+}
+.action-panel-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: flex-start;
+}
+.action-panel .card-sub {
+  margin-bottom: 16px;
+}
+.quick-actions.no-margin {
+  margin-bottom: 0;
+}
+.section-gap {
+  margin-top: 28px;
+}
+.org-action-panel {
+  position: relative;
+  z-index: 1;
+}
+
+/* v4 개선: 로그인 사용자 정보 */
+.user-mainline {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 4px;
+}
+.user-mainline strong {
+  margin-bottom: 0;
+}
+.user-login-small {
+  font-size: 10.5px !important;
+  color: var(--muted-2) !important;
+  white-space: nowrap;
+}
+.user-edit-btn {
+  margin-top: 10px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--blue-soft);
+  color: #3e6ebd;
+  padding: 7px 10px;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+/* v4 개선: 카드 등록 폼 */
+.card-inline-form {
+  display: grid;
+  grid-template-columns: 1.4fr .8fr 1fr auto;
+  align-items: end;
+}
+.card-manage-list .manage-row strong {
+  word-break: keep-all;
+}
+
+/* v4 개선: 폼 도움말 */
+.form-help {
+  padding: 13px 14px;
+  border-radius: 16px;
+  background: var(--blue-soft);
+  color: #3e6ebd;
+  font-size: 13px;
+  line-height: 1.55;
+  word-break: keep-all;
+}
+.field-hint {
+  display: block;
+  margin-top: -2px;
+  color: var(--muted-2);
+  font-size: 11px;
+  line-height: 1.35;
+  font-weight: 600;
+}
+
+@media (max-width: 900px) {
+  .card-inline-form {
+    grid-template-columns: 1fr;
+  }
+}

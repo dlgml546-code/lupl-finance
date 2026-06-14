@@ -55,8 +55,10 @@ export type Person = {
   id: string;
   auth_user_id: string | null;
   name: string;
+  employee_number: string | null;
   email: string | null;
   phone: string | null;
+  password_changed_at: string | null;
   department_id: string | null;
   rank: Rank;
   hire_date: string | null;

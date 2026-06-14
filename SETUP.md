@@ -17,10 +17,11 @@ Supabase 대시보드 → SQL Editor에서 `supabase/schema.sql` 전체를 실�
 
 ```
 supabase functions deploy receipt-ocr
+supabase functions deploy admin-create-user
 supabase secrets set OPENAI_API_KEY=sk-...
 supabase secrets set SUPABASE_SERVICE_ROLE_KEY=...
 ```
 
 ## 4. 첫 로그인
 첫 번째로 가입/로그인한 계정이 자동으로 '대표'가 됩니다.
-이후 조직·권한관리에서 직원을 추가하고 직급/부서를 배정하세요.
+이후 조직·권한관리에서 직원을 사번 기준으로 추가하고 직급/부서를 배정하세요. 직원 초기 비밀번호는 lupl+휴대전화 뒷번호 4자리입니다.

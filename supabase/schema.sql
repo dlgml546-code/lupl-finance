@@ -38,8 +38,10 @@ create table if not exists public.people (
   id uuid primary key default gen_random_uuid(),
   auth_user_id uuid references auth.users(id) on delete set null,
   name text not null,
+  employee_number text unique,
   email text unique,
   phone text,
+  password_changed_at timestamptz,
   department_id uuid references public.departments(id) on delete set null,
   rank public.lupl_rank not null default '매니저',
   hire_date date,
@@ -54,6 +56,7 @@ create table if not exists public.people (
 );
 create index if not exists idx_people_auth_user_id on public.people(auth_user_id);
 create index if not exists idx_people_email on public.people(lower(email));
+create index if not exists idx_people_employee_number on public.people(employee_number);
 
 create table if not exists public.page_permissions (
   id uuid primary key default gen_random_uuid(),
@@ -63,6 +66,20 @@ create table if not exists public.page_permissions (
   created_at timestamptz not null default now(),
   unique(person_id, page_key)
 );
+
+
+-- 직원 사번 로그인/비밀번호 변경 상태 컬럼 보정
+alter table if exists public.people add column if not exists employee_number text;
+alter table if exists public.people add column if not exists password_changed_at timestamptz;
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint where conname = 'people_employee_number_unique'
+  ) then
+    alter table public.people add constraint people_employee_number_unique unique (employee_number);
+  end if;
+end $$;
+create index if not exists idx_people_employee_number on public.people(employee_number);
 
 -- 8번: 결제수단(카드) 마스터
 create table if not exists public.payment_cards (
