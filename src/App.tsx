@@ -624,11 +624,13 @@ export default function App() {
       const middle = String(formData.get("project_middle_category") || "");
       const small = String(formData.get("project_small_category") || "");
       const groups = [major, middle, small].filter(Boolean) as ProjectGroup[];
+      const legacyCategory = small || middle || major || "기타";
       const monthlyPaymentMemo = String(formData.get("payment_due_cycle") || "") === "monthly" ? "입금 예정: 매월 반복" : "";
       const plainMemo = String(formData.get("memo") || "");
       const categoryMemo = groups.length ? `프로젝트 분류: ${groups.join(" > ")}` : "";
       const payload = {
         name: String(formData.get("name") || ""),
+        category: legacyCategory,
         client_type: (String(formData.get("client_type") || "") || null) as ClientType | null,
         project_major_category: major || null,
         project_middle_category: middle || null,
@@ -1248,6 +1250,7 @@ export default function App() {
         .from("business_projects")
         .insert({
           name: `더미 프로젝트 ${stamp}`,
+          category: "기관 워크숍",
           client_type: "기업" as ClientType,
           project_group: ["교육"] as ProjectGroup[],
           project_major_category: "교육",
