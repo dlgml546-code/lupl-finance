@@ -545,6 +545,9 @@ export default function App() {
       const middle = String(formData.get("project_middle_category") || "");
       const small = String(formData.get("project_small_category") || "");
       const groups = [major, middle, small].filter(Boolean) as ProjectGroup[];
+      const monthlyPaymentMemo = String(formData.get("payment_due_cycle") || "") === "monthly" ? "입금 예정: 매월 반복" : "";
+      const plainMemo = String(formData.get("memo") || "");
+      const categoryMemo = groups.length ? `프로젝트 분류: ${groups.join(" > ")}` : "";
       const payload = {
         name: String(formData.get("name") || ""),
         client_type: (String(formData.get("client_type") || "") || null) as ClientType | null,
@@ -570,32 +573,85 @@ export default function App() {
         tax_invoice_date: String(formData.get("tax_invoice_date") || "") || null,
         repeat_client: formData.get("repeat_client") === "on",
         owner_id: currentPerson?.id || null,
-        memo: [
-          String(formData.get("payment_due_cycle") || "") === "monthly" ? "입금 예정: 매월 반복" : "",
-          String(formData.get("memo") || "")
-        ].filter(Boolean).join("\n")
+        memo: [monthlyPaymentMemo, plainMemo].filter(Boolean).join("\n")
       };
 
-      const { data, error } = await supabase.from("business_projects").insert(payload).select().single();
+      let { data, error } = await supabase.from("business_projects").insert(payload).select().single();
+      if (error && String(error.message || "").toLowerCase().includes("column")) {
+        const fallbackPayload = {
+          name: payload.name,
+          client_type: payload.client_type,
+          project_group: payload.project_group,
+          client_name: payload.client_name,
+          status: payload.status,
+          confirmed_amount: payload.confirmed_amount,
+          received_amount: payload.received_amount,
+          cost: payload.cost,
+          receipt_status: payload.receipt_status,
+          owner_label: payload.owner_label,
+          contact: payload.contact,
+          inflow_route: payload.inflow_route,
+          payment_due_date: payload.payment_due_date,
+          due_date: payload.due_date,
+          tax_invoice_date: payload.tax_invoice_date,
+          repeat_client: payload.repeat_client,
+          owner_id: payload.owner_id,
+          memo: [categoryMemo, monthlyPaymentMemo, `우리 팀 실무 담당자: ${payload.operator_label || "-"}`, plainMemo].filter(Boolean).join("\n")
+        };
+        const fallback = await supabase.from("business_projects").insert(fallbackPayload).select().single();
+        data = fallback.data;
+        error = fallback.error;
+      }
+      if (error && String(error.message || "").toLowerCase().includes("column")) {
+        const minimalPayload = {
+          name: payload.name,
+          client_type: payload.client_type,
+          client_name: payload.client_name,
+          status: payload.status,
+          confirmed_amount: payload.confirmed_amount,
+          received_amount: payload.received_amount,
+          cost: payload.cost,
+          receipt_status: payload.receipt_status,
+          owner_label: payload.owner_label,
+          contact: payload.contact,
+          inflow_route: payload.inflow_route,
+          payment_due_date: payload.payment_due_date,
+          due_date: payload.due_date,
+          tax_invoice_date: payload.tax_invoice_date,
+          repeat_client: payload.repeat_client,
+          owner_id: payload.owner_id,
+          memo: [categoryMemo, monthlyPaymentMemo, `우리 팀 실무 담당자: ${payload.operator_label || "-"}`, plainMemo].filter(Boolean).join("\n")
+        };
+        const minimal = await supabase.from("business_projects").insert(minimalPayload).select().single();
+        data = minimal.data;
+        error = minimal.error;
+      }
       if (error) throw error;
+      if (!data) throw new Error("프로젝트 저장 결과를 받지 못했습니다.");
 
-      await createReviewItem({
-        area: "사업·매출",
-        title: `${data.name} 프로젝트 등록`,
-        reason: "신규 프로젝트 검토",
-        amount_or_impact: formatWon(data.confirmed_amount),
-        owner_label: data.owner_label || currentPerson?.name || "담당자",
-        status: "검토 전",
-        target_table: "business_projects",
-        target_id: data.id,
-        checklist: "확정금액·거래처 구분·책임자·입금예정일이 맞는지 확인하세요."
-      });
+      try {
+        await createReviewItem({
+          area: "사업·매출",
+          title: `${data.name} 프로젝트 등록`,
+          reason: "신규 프로젝트 검토",
+          amount_or_impact: formatWon(data.confirmed_amount),
+          owner_label: data.owner_label || currentPerson?.name || "담당자",
+          status: "검토 전",
+          target_table: "business_projects",
+          target_id: data.id,
+          checklist: "확정금액·거래처 구분·책임자·입금예정일이 맞는지 확인하세요."
+        });
+      } catch (reviewError) {
+        console.warn("project review item creation skipped", reviewError);
+      }
 
       showToast("프로젝트를 등록했습니다.");
       setModal(null);
       await loadAll();
     } catch (error) {
+      console.error("project create failed", error);
       showToast(error instanceof Error ? error.message : "프로젝트 등록 실패", "err");
+      throw error;
     }
   }
 
