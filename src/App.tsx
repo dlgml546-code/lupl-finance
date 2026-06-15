@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   Building2,
   Clock,
@@ -211,6 +211,85 @@ function handleMoneyInput(event: React.FormEvent<HTMLInputElement>) {
   const input = event.currentTarget;
   input.value = formatMoneyInputValue(input.value);
 }
+
+type DbError = { message?: string; code?: string } | null;
+
+// 배포된 테이블에 일부 컬럼이 빠져 있어도(스키마 드리프트) 등록이 막히지 않도록,
+// PostgREST가 "없는 컬럼"을 알려주면 그 컬럼만 제거하고 다시 시도하는 공통 저장 함수.
+// preserveToMemo에 지정된 컬럼이 제거되면 그 값을 memo로 보존한다.
+async function saveWithHealing<T = Record<string, unknown>>(
+  table: string,
+  payload: Record<string, unknown>,
+  options?: { upsert?: { onConflict: string }; preserveToMemo?: Record<string, string> }
+): Promise<{ data: T | null; error: DbError }> {
+  const attempt: Record<string, unknown> = { ...payload };
+  const preserve = options?.preserveToMemo || {};
+  let data: T | null = null;
+  let error: DbError = null;
+  for (let i = 0; i < 24; i++) {
+    const builder = options?.upsert
+      ? supabase.from(table).upsert(attempt, options.upsert)
+      : supabase.from(table).insert(attempt);
+    const res = await builder.select().single();
+    data = (res.data as T) ?? null;
+    error = res.error as DbError;
+    if (!error) break;
+
+    const raw = String(error.message || "");
+    const lower = raw.toLowerCase();
+    const code = String(error.code || "");
+    const isMissingColumn =
+      code === "PGRST204" ||
+      lower.includes("schema cache") ||
+      (lower.includes("column") && (lower.includes("could not find") || lower.includes("does not exist")));
+    if (!isMissingColumn) break;
+
+    const match = raw.match(/'([^']+)' column/i) || raw.match(/column "?([a-zA-Z0-9_]+)"?/i);
+    const badColumn = match?.[1];
+    if (!badColumn || !(badColumn in attempt)) break;
+
+    if (preserve[badColumn] && "memo" in attempt) {
+      attempt.memo = [preserve[badColumn], String(attempt.memo || "")].filter(Boolean).join("\n");
+    }
+    delete attempt[badColumn];
+  }
+  return { data, error };
+}
+
+// RLS/권한 오류는 사용자가 알아볼 수 있게 한국어로 바꾼다.
+function toFriendlyDbError(error: DbError, fallback: string) {
+  const lower = String(error?.message || "").toLowerCase();
+  if (lower.includes("row-level security") || lower.includes("policy")) {
+    return new Error("권한(RLS) 정책에 막혀 저장하지 못했습니다. 로그인 상태와 Supabase RLS 정책을 확인하세요.");
+  }
+  return new Error(error?.message || fallback);
+}
+
+// 임시저장(드래프트) 공통 유틸 — 저장 실패 시 입력 내용을 보존하고 다음에 복구한다.
+const draftStore = {
+  read(key: string): Record<string, unknown> | null {
+    try {
+      const raw = window.localStorage.getItem(key);
+      return raw ? (JSON.parse(raw) as Record<string, unknown>) : null;
+    } catch {
+      return null;
+    }
+  },
+  write(key: string, value: Record<string, unknown>) {
+    try {
+      window.localStorage.setItem(key, JSON.stringify(value));
+    } catch {
+      /* 용량 초과 등은 무시 */
+    }
+  },
+  clear(key: string) {
+    try {
+      window.localStorage.removeItem(key);
+    } catch {
+      /* 무시 */
+    }
+  }
+};
 
 function formatPhoneNumber(value: string) {
   const digits = value.replace(/[^0-9]/g, "").slice(0, 11);
@@ -496,8 +575,8 @@ export default function App() {
   }
 
   async function createReviewItem(payload: Omit<ReviewItem, "id">) {
-    const { error } = await supabase.from("review_items").insert(payload);
-    if (error) throw error;
+    const { error } = await saveWithHealing("review_items", payload as unknown as Record<string, unknown>);
+    if (error) throw toFriendlyDbError(error, "검토 항목 생성에 실패했습니다.");
   }
 
   async function updateReviewStatus(review: ReviewItem, status: ReviewStatus) {
@@ -576,57 +655,21 @@ export default function App() {
         memo: [monthlyPaymentMemo, plainMemo].filter(Boolean).join("\n")
       };
 
-      let { data, error } = await supabase.from("business_projects").insert(payload).select().single();
-      if (error && String(error.message || "").toLowerCase().includes("column")) {
-        const fallbackPayload = {
-          name: payload.name,
-          client_type: payload.client_type,
-          project_group: payload.project_group,
-          client_name: payload.client_name,
-          status: payload.status,
-          confirmed_amount: payload.confirmed_amount,
-          received_amount: payload.received_amount,
-          cost: payload.cost,
-          receipt_status: payload.receipt_status,
-          owner_label: payload.owner_label,
-          contact: payload.contact,
-          inflow_route: payload.inflow_route,
-          payment_due_date: payload.payment_due_date,
-          due_date: payload.due_date,
-          tax_invoice_date: payload.tax_invoice_date,
-          repeat_client: payload.repeat_client,
-          owner_id: payload.owner_id,
-          memo: [categoryMemo, monthlyPaymentMemo, `우리 팀 실무 담당자: ${payload.operator_label || "-"}`, plainMemo].filter(Boolean).join("\n")
-        };
-        const fallback = await supabase.from("business_projects").insert(fallbackPayload).select().single();
-        data = fallback.data;
-        error = fallback.error;
-      }
-      if (error && String(error.message || "").toLowerCase().includes("column")) {
-        const minimalPayload = {
-          name: payload.name,
-          client_type: payload.client_type,
-          client_name: payload.client_name,
-          status: payload.status,
-          confirmed_amount: payload.confirmed_amount,
-          received_amount: payload.received_amount,
-          cost: payload.cost,
-          receipt_status: payload.receipt_status,
-          owner_label: payload.owner_label,
-          contact: payload.contact,
-          inflow_route: payload.inflow_route,
-          payment_due_date: payload.payment_due_date,
-          due_date: payload.due_date,
-          tax_invoice_date: payload.tax_invoice_date,
-          repeat_client: payload.repeat_client,
-          owner_id: payload.owner_id,
-          memo: [categoryMemo, monthlyPaymentMemo, `우리 팀 실무 담당자: ${payload.operator_label || "-"}`, plainMemo].filter(Boolean).join("\n")
-        };
-        const minimal = await supabase.from("business_projects").insert(minimalPayload).select().single();
-        data = minimal.data;
-        error = minimal.error;
-      }
-      if (error) throw error;
+      // 스키마 드리프트(배포 테이블에 일부 컬럼이 없음)에도 등록이 막히지 않도록 공통 저장 함수 사용.
+      const { data, error } = await saveWithHealing<{ id: string; name: string; owner_label: string | null; confirmed_amount: number }>(
+        "business_projects",
+        payload,
+        {
+          preserveToMemo: {
+            project_major_category: categoryMemo,
+            project_middle_category: categoryMemo,
+            project_small_category: categoryMemo,
+            project_group: categoryMemo,
+            operator_label: `우리 팀 실무 담당자: ${payload.operator_label || "-"}`
+          }
+        }
+      );
+      if (error) throw toFriendlyDbError(error, "프로젝트 등록에 실패했습니다.");
       if (!data) throw new Error("프로젝트 저장 결과를 받지 못했습니다.");
 
       try {
@@ -716,8 +759,9 @@ export default function App() {
         memo: String(formData.get("memo") || "")
       };
 
-      const { data, error } = await supabase.from("expense_requests").insert(payload).select().single();
-      if (error) throw error;
+      const { data, error } = await saveWithHealing<{ id: string; purpose: string; amount: number; review_reason: string | null }>("expense_requests", payload);
+      if (error) throw toFriendlyDbError(error, "지출결의 등록에 실패했습니다.");
+      if (!data) throw new Error("지출결의 저장 결과를 받지 못했습니다.");
 
       await createReviewItem({
         area: "지출결의",
@@ -737,6 +781,7 @@ export default function App() {
     } catch (error) {
       console.error(error);
       showToast(error instanceof Error ? error.message : "지출결의 등록 실패", "err");
+      throw error;
     }
   }
 
@@ -762,8 +807,9 @@ export default function App() {
         memo: String(formData.get("memo") || "")
       };
 
-      const { data, error } = await supabase.from("expense_requests").insert(payload).select().single();
-      if (error) throw error;
+      const { data, error } = await saveWithHealing<{ id: string; purpose: string; amount: number }>("expense_requests", payload);
+      if (error) throw toFriendlyDbError(error, "반복 지출 등록에 실패했습니다.");
+      if (!data) throw new Error("반복 지출 저장 결과를 받지 못했습니다.");
 
       await createReviewItem({
         area: "지출결의",
@@ -782,6 +828,7 @@ export default function App() {
       await loadAll();
     } catch (error) {
       showToast(error instanceof Error ? error.message : "반복 지출 등록 실패", "err");
+      throw error;
     }
   }
 
@@ -820,9 +867,10 @@ export default function App() {
 
       const result = personId
         ? await supabase.from("people").update(payload).eq("id", personId).select().single()
-        : await supabase.from("people").insert(payload).select().single();
+        : await saveWithHealing<Person>("people", payload);
 
-      if (result.error) throw result.error;
+      if (result.error) throw toFriendlyDbError(result.error, "직원 정보를 저장하지 못했습니다.");
+      if (!result.data) throw new Error("직원 저장 결과를 받지 못했습니다.");
 
       const saved = result.data as Person;
 
@@ -863,6 +911,7 @@ export default function App() {
       }
     } catch (error) {
       showToast(error instanceof Error ? error.message : "직원 저장 실패", "err");
+      throw error;
     }
   }
 
@@ -887,8 +936,9 @@ export default function App() {
         memo: String(formData.get("memo") || "")
       };
 
-      const { data, error } = await supabase.from("bonus_payments").insert(payload).select().single();
-      if (error) throw error;
+      const { data, error } = await saveWithHealing<{ id: string; bonus_amount: number | null }>("bonus_payments", payload);
+      if (error) throw toFriendlyDbError(error, "상여금 등록에 실패했습니다.");
+      if (!data) throw new Error("상여금 저장 결과를 받지 못했습니다.");
 
       await createReviewItem({
         area: "인건비",
@@ -907,6 +957,7 @@ export default function App() {
       await loadAll();
     } catch (error) {
       showToast(error instanceof Error ? error.message : "상여금 저장 실패", "err");
+      throw error;
     }
   }
 
@@ -921,14 +972,15 @@ export default function App() {
         hours: parseNumber(formData.get("hours"))
       };
 
-      const { error } = await supabase.from("project_labor_allocations").insert(payload);
-      if (error) throw error;
+      const { error } = await saveWithHealing("project_labor_allocations", payload);
+      if (error) throw toFriendlyDbError(error, "맨먼스 저장에 실패했습니다.");
 
       showToast("맨먼스 투입 정보를 저장했습니다.");
       setModal(null);
       await loadAll();
     } catch (error) {
       showToast(error instanceof Error ? error.message : "맨먼스 저장 실패", "err");
+      throw error;
     }
   }
 
@@ -939,13 +991,14 @@ export default function App() {
         page_key: String(formData.get("page_key") || "overview"),
         permission: String(formData.get("permission") || "보기만 가능")
       };
-      const { error } = await supabase.from("page_permissions").upsert(payload, { onConflict: "person_id,page_key" });
-      if (error) throw error;
+      const { error } = await saveWithHealing("page_permissions", payload, { upsert: { onConflict: "person_id,page_key" } });
+      if (error) throw toFriendlyDbError(error, "권한 저장에 실패했습니다.");
       showToast("권한을 저장했습니다.");
       setModal(null);
       await loadAll();
     } catch (error) {
       showToast(error instanceof Error ? error.message : "권한 저장 실패", "err");
+      throw error;
     }
   }
 
@@ -977,8 +1030,8 @@ export default function App() {
         runway_months: netBurn > 0 ? Math.round((currentCash / netBurn) * 10) / 10 : 0
       };
 
-      const { error } = await supabase.from("cash_snapshots").upsert(payload, { onConflict: "snapshot_month" });
-      if (error) throw error;
+      const { error } = await saveWithHealing("cash_snapshots", payload, { upsert: { onConflict: "snapshot_month" } });
+      if (error) throw toFriendlyDbError(error, "현금 현황 저장에 실패했습니다.");
       const transferNames = formData.getAll("auto_transfer_purpose").map(String);
       const transferAmounts = formData.getAll("auto_transfer_amount");
       const transferDates = formData.getAll("auto_transfer_date").map(String);
@@ -1010,24 +1063,30 @@ export default function App() {
 
       if (transfers.length > 0) {
         const { data: inserted, error: transferError } = await supabase.from("expense_requests").insert(transfers).select();
-        if (transferError) throw transferError;
-        await Promise.all((inserted || []).map((expense) => createReviewItem({
-          area: "지출결의",
-          title: expense.purpose,
-          reason: "자동이체 처리 확인",
-          amount_or_impact: formatWon(expense.amount),
-          owner_label: currentPerson?.name || "담당자",
-          status: "검토 전",
-          target_table: "expense_requests",
-          target_id: expense.id,
-          checklist: "자동이체 목적, 금액, 처리일을 확인해 주세요."
-        })));
+        if (transferError) {
+          // 스냅샷은 이미 저장됐으므로 전체 실패로 되돌리지 않고 경고만 남긴다.
+          console.warn("auto transfer insert failed", transferError);
+          showToast("현금 현황은 저장됐지만 자동이체 항목 등록은 실패했습니다. 자동이체는 다시 시도해 주세요.", "warn");
+        } else {
+          await Promise.all((inserted || []).map((expense) => createReviewItem({
+            area: "지출결의",
+            title: expense.purpose,
+            reason: "자동이체 처리 확인",
+            amount_or_impact: formatWon(expense.amount),
+            owner_label: currentPerson?.name || "담당자",
+            status: "검토 전",
+            target_table: "expense_requests",
+            target_id: expense.id,
+            checklist: "자동이체 목적, 금액, 처리일을 확인해 주세요."
+          })));
+        }
       }
       showToast("현금 현황을 자동 계산 기준으로 저장했습니다.");
       setModal(null);
       await loadAll();
     } catch (error) {
       showToast(error instanceof Error ? error.message : "현금 현황 저장 실패", "err");
+      throw error;
     }
   }
 
@@ -1041,8 +1100,8 @@ export default function App() {
         sort_order: categories.length + 1
       };
       if (!payload.name) throw new Error("카테고리명을 입력하세요.");
-      const { error } = await supabase.from("expense_categories").insert(payload);
-      if (error) throw error;
+      const { error } = await saveWithHealing("expense_categories", payload);
+      if (error) throw toFriendlyDbError(error, "카테고리 추가에 실패했습니다.");
       showToast("카테고리를 추가했습니다.");
       await loadAll();
     } catch (error) {
@@ -1075,8 +1134,8 @@ export default function App() {
         is_active: true,
         sort_order: cards.length + 1
       };
-      const { error } = await supabase.from("payment_cards").insert(payload);
-      if (error) throw error;
+      const { error } = await saveWithHealing("payment_cards", payload);
+      if (error) throw toFriendlyDbError(error, "결제수단 등록에 실패했습니다.");
       showToast("결제수단을 등록했습니다.");
       await loadAll();
     } catch (error) {
@@ -2364,7 +2423,7 @@ function Modal({
         )}
 
         {modal === "projectForm" && (
-          <FormModal title="새 프로젝트 등록" desc="외주용역 항목 기준입니다. 비용은 연결된 지출결의에서 자동 집계되므로 입력하지 않습니다." onSubmit={onCreateProject} onClose={close}>
+          <FormModal title="새 프로젝트 등록" desc="외주용역 항목 기준입니다. 비용은 연결된 지출결의에서 자동 집계되므로 입력하지 않습니다." onSubmit={onCreateProject} onClose={close} draftKey="lupl.draft.projectForm">
             <label>프로젝트 내용<input name="name" required placeholder="프로젝트명을 입력하세요" /></label>
             <label>거래처/기관명<input name="client_name" placeholder="거래처 또는 기관명을 입력하세요" /></label>
             <label>거래처 구분<select name="client_type"><option value="">선택</option>{clientTypes.map((c) => <option key={c}>{c}</option>)}</select></label>
@@ -2390,15 +2449,7 @@ function Modal({
         )}
 
         {modal === "recurringForm" && (
-          <FormModal title="반복 지출(구독) 등록" desc="구독료·정기결제 전용입니다. 주기를 선택하면 검토함에 [정기] 항목으로 등록됩니다." onSubmit={onCreateRecurring} onClose={close}>
-            <label>서비스/항목명<input name="purpose" required placeholder="서비스 또는 항목명을 입력하세요" /></label>
-            <label>결제 주기<select name="recurring_cycle" defaultValue="매월"><option>매월</option><option>매분기</option><option>매년</option></select></label>
-            <label>결제 금액<input name="amount" defaultValue="0" required /></label>
-            <label>결제방식<select name="payment_method" defaultValue="카드">{paymentMethods.map((m) => <option key={m}>{m}</option>)}</select></label>
-            <label>결제 카드<select name="card_id"><option value="">선택 안 함</option>{cards.map((c) => <option key={c.id} value={c.id}>{c.label}</option>)}</select></label>
-            <label>다음 결제 예정일<input type="date" name="used_at" defaultValue={today()} /></label>
-            <label className="wide">메모<textarea name="memo" placeholder="해지 조건, 담당자 등" /></label>
-          </FormModal>
+          <RecurringWizardForm cards={cards} onSubmit={onCreateRecurring} onClose={close} />
         )}
 
         {modal === "personForm" && (
@@ -2407,6 +2458,7 @@ function Modal({
             desc={selectedPerson ? "이름, 사번, 연락처, 연봉 정보를 수정합니다. 본인 계정은 새 비밀번호를 입력해 직접 변경할 수 있습니다." : "직원은 사번으로 등록합니다. 관리자는 이메일과 사번을 모두 입력할 수 있고, 이메일이 없으면 사번 기반 내부 로그인 계정을 생성합니다."}
             onSubmit={onCreatePerson}
             onClose={close}
+            draftKey={selectedPerson ? undefined : "lupl.draft.personForm"}
           >
             <input type="hidden" name="person_id" value={selectedPerson?.id || ""} />
             <label>이름<input name="name" required defaultValue={selectedPerson?.name || ""} placeholder="홍길동" /></label>
@@ -2430,7 +2482,7 @@ function Modal({
         )}
 
         {modal === "laborForm" && (
-          <FormModal title="프로젝트별 맨먼스 입력" desc="직위별 투입률과 맨먼스를 저장합니다." onSubmit={onCreateLabor} onClose={close}>
+          <FormModal title="프로젝트별 맨먼스 입력" desc="직위별 투입률과 맨먼스를 저장합니다." onSubmit={onCreateLabor} onClose={close} draftKey="lupl.draft.laborForm">
             <label>프로젝트<select name="project_id" required>{projects.map((p) => <option value={p.id} key={p.id}>{p.name}</option>)}</select></label>
             <label>직원<select name="person_id"><option value="">선택 안 함</option>{people.map((p) => <option value={p.id} key={p.id}>{p.name}</option>)}</select></label>
             <label>직위<select name="rank">{ranks.map((rank) => <option key={rank}>{rank}</option>)}</select></label>
@@ -2441,7 +2493,7 @@ function Modal({
         )}
 
         {modal === "permissionForm" && (
-          <FormModal title="페이지별 권한 추가" desc="선택한 사람에게 특정 페이지 접근 권한을 부여합니다." onSubmit={onCreatePermission} onClose={close}>
+          <FormModal title="페이지별 권한 추가" desc="선택한 사람에게 특정 페이지 접근 권한을 부여합니다." onSubmit={onCreatePermission} onClose={close} draftKey="lupl.draft.permissionForm">
             <label>직원<select name="person_id" required>{people.map((p) => <option value={p.id} key={p.id}>{p.name}</option>)}</select></label>
             <label>페이지<select name="page_key">{menu.map((m) => <option value={pageKeyMap[m.key]} key={m.key}>{m.label}</option>)}</select></label>
             <label>권한<select name="permission"><option>보기만 가능</option><option>입력 가능</option><option>승인 가능</option><option>관리자</option></select></label>
@@ -2500,10 +2552,32 @@ function CashForm({
   onSubmit: (formData: FormData) => Promise<void>;
   onClose: () => void;
 }) {
+  const draftKey = "lupl.draft.cashForm";
   const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState("");
+  const [month, setMonth] = useState(today().slice(0, 7));
   const [accounts, setAccounts] = useState([{ id: crypto.randomUUID(), bank: "", label: "", balance: "" }]);
   const [transfers, setTransfers] = useState([{ id: crypto.randomUUID(), purpose: "", amount: "", date: today(), memo: "" }]);
   const total = accounts.reduce((sum, item) => sum + (Number(item.balance.replace(/[^0-9]/g, "")) || 0), 0);
+
+  // 저장하지 못한 입력 내용 복구
+  useEffect(() => {
+    const saved = draftStore.read(draftKey) as { month?: string; accounts?: typeof accounts; transfers?: typeof transfers } | null;
+    if (!saved) return;
+    const hasContent = (saved.accounts || []).some((a) => a.bank || a.label || a.balance) || (saved.transfers || []).some((t) => t.purpose || t.amount);
+    if (hasContent && window.confirm("저장하지 못한 현금 현황 입력 내용이 있습니다. 이어서 작성할까요?")) {
+      if (saved.month) setMonth(saved.month);
+      if (saved.accounts?.length) setAccounts(saved.accounts);
+      if (saved.transfers?.length) setTransfers(saved.transfers);
+    } else {
+      draftStore.clear(draftKey);
+    }
+  }, []);
+
+  // 입력 중 자동 임시저장
+  useEffect(() => {
+    draftStore.write(draftKey, { month, accounts, transfers });
+  }, [month, accounts, transfers]);
 
   function updateAccount(id: string, key: "bank" | "label" | "balance", value: string) {
     setAccounts((items) => items.map((item) => item.id === id ? { ...item, [key]: key === "balance" ? formatMoneyInputValue(value) : value } : item));
@@ -2520,12 +2594,20 @@ function CashForm({
         className="modal-form"
         onSubmit={async (event) => {
           event.preventDefault();
+          const formData = new FormData(event.currentTarget);
           setBusy(true);
-          await onSubmit(new FormData(event.currentTarget));
-          setBusy(false);
+          setMessage("");
+          try {
+            await onSubmit(formData);
+            draftStore.clear(draftKey); // 성공 시 임시저장 삭제
+          } catch (error) {
+            setMessage(error instanceof Error ? error.message : "저장에 실패했습니다. 입력 내용은 임시저장했어요.");
+          } finally {
+            setBusy(false);
+          }
         }}
       >
-        <label>기준 월<input type="month" name="snapshot_month" defaultValue={today().slice(0, 7)} required /></label>
+        <label>기준 월<input type="month" name="snapshot_month" value={month} onChange={(event) => setMonth(event.target.value)} required /></label>
         <input type="hidden" name="current_cash" value={total} />
 
         <div className="wide form-section">
@@ -2561,6 +2643,7 @@ function CashForm({
         </div>
 
         <div className="form-help wide">통장별 잔액은 합계 계산용으로 사용되고, 자동이체 항목은 지출결의에 새로 등록됩니다.</div>
+        {message && <div className="form-help wide" style={{ color: "#c0392b" }}>{message}</div>}
         <div className="modal-actions">
           <button className="btn" type="button" onClick={onClose}>닫기</button>
           <button className="btn blue" disabled={busy}>{busy ? "저장 중" : "저장"}</button>
@@ -2598,42 +2681,13 @@ function ProjectWizardForm({
   });
 
   const draftKey = "lupl.projectWizardDraft.v2";
-  const recoveryOfferKey = "lupl.projectWizardRestoreOffer.v1";
 
   useEffect(() => {
     const saved = window.localStorage.getItem(draftKey);
-    if (!saved) {
-      if (!window.localStorage.getItem(recoveryOfferKey) && window.confirm("방금 입력하신 이룸고등학교 프로젝트 내용을 복구하시겠습니까?")) {
-        setAnswers((prev) => ({
-          ...prev,
-          name: "이룸고등학교 미디어콘텐츠 교육프로그램(AI 교육)",
-          client_name: "대구이룸고등학교",
-          client_type: "특수학교",
-          status: "진행 중",
-          owner_label: "정혜리",
-          operator_label: "정혜리",
-          confirmed_amount: "9,902,080",
-          received_amount: "2,320,800",
-          receipt_status: "일부 수령",
-          client_contact_phone: "010-9339-4641",
-          due_date: "2026-12-31",
-          payment_due_date: "2026-06-08",
-          payment_due_cycle: "monthly",
-          project_major_category: "교육",
-          project_middle_category: "AI 교육",
-          project_small_category: "특수학교 정규수업",
-          inflow_route: "직접 문의",
-          repeat_client: "true",
-          memo: "매 달 계약된 강사의 통장으로 들어가기 때문에 회수 필요"
-        }));
-        setStep(12);
-      }
-      window.localStorage.setItem(recoveryOfferKey, "shown");
-      return;
-    }
+    if (!saved) return;
     try {
       const parsed = JSON.parse(saved) as { step?: number; answers?: Record<string, string> };
-      if (parsed.answers && window.confirm("작성 중이던 프로젝트가 있습니다. 이어서 작성하시겠습니까?")) {
+      if (parsed.answers && Object.keys(parsed.answers).length && window.confirm("저장하지 못한 프로젝트 입력 내용이 있습니다. 이어서 작성할까요?")) {
         setAnswers((prev) => ({ ...prev, ...parsed.answers }));
         setStep(Math.min(Math.max(Number(parsed.step || 0), 0), 12));
       } else {
@@ -2798,6 +2852,7 @@ function ProjectWizardForm({
     setMessage("");
     try {
       await onSubmit(formData);
+      window.localStorage.removeItem(draftKey); // 성공 시 임시저장 삭제
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "프로젝트 등록에 실패했습니다. 입력 내용은 임시저장되어 있습니다.");
     } finally {
@@ -2830,6 +2885,62 @@ function ProjectWizardForm({
   );
 }
 
+// 질문형 위저드 공통 셸 — 프로젝트 등록과 동일한 단계형 UI
+type WizardStep = {
+  key: string;
+  title: string;
+  required?: boolean;
+  hint?: string;
+  body: React.ReactNode;
+};
+
+function WizardShell({
+  title, desc, steps, answers, busy, message, submitLabel, summaryPrimary, summarySecondary, onSubmit, onClose
+}: {
+  title: string;
+  desc: string;
+  steps: WizardStep[];
+  answers: Record<string, string>;
+  busy: boolean;
+  message: string;
+  submitLabel: string;
+  summaryPrimary: string;
+  summarySecondary: string;
+  onSubmit: () => void;
+  onClose: () => void;
+}) {
+  const [step, setStep] = useState(0);
+  const safeStep = Math.min(step, steps.length - 1);
+  const current = steps[safeStep];
+  const canGoNext = !current.required || Boolean((answers[current.key] || "").trim());
+
+  return (
+    <>
+      <ModalHead title={title} desc={`${safeStep + 1}/${steps.length} 단계 · ${desc}`} onClose={onClose} />
+      <div className="wizard-card">
+        <div className="wizard-progress"><span style={{ width: `${((safeStep + 1) / steps.length) * 100}%` }} /></div>
+        <h3>{current.title}</h3>
+        <div className="wizard-field">{current.body}</div>
+        {current.hint && <div className="form-help">{current.hint}</div>}
+        {message && <div className="form-help" style={{ color: "#c0392b" }}>{message}</div>}
+        <div className="wizard-summary">
+          <strong>{summaryPrimary}</strong>
+          <span>{summarySecondary}</span>
+        </div>
+      </div>
+      <div className="modal-actions">
+        <button className="btn" type="button" onClick={() => setStep((value) => Math.max(0, value - 1))} disabled={safeStep === 0 || busy}>이전</button>
+        {safeStep < steps.length - 1 ? (
+          <button className="btn blue" type="button" onClick={() => setStep((value) => value + 1)} disabled={!canGoNext || busy}>다음 질문</button>
+        ) : (
+          <button className="btn blue" type="button" onClick={onSubmit} disabled={busy || !canGoNext}>{busy ? "저장 중" : submitLabel}</button>
+        )}
+      </div>
+    </>
+  );
+}
+
+// 빠른 지출 등록 - 질문형(프로젝트 등록과 동일한 방식) + 임시저장
 function ExpenseForm({
   cards, categories, projects, onSubmit, onClose
 }: {
@@ -2839,12 +2950,32 @@ function ExpenseForm({
   onSubmit: (formData: FormData) => Promise<void>;
   onClose: () => void;
 }) {
+  const draftKey = "lupl.draft.expenseWizard";
   const [busy, setBusy] = useState(false);
-  const [usage, setUsage] = useState<ExpenseUsage>("운영비");
-  const [method, setMethod] = useState<PaymentMethod>("카드");
+  const [message, setMessage] = useState("");
+  const [file, setFile] = useState<File | null>(null);
   const [pastPurposes, setPastPurposes] = useState<string[]>([]);
+  const [answers, setAnswers] = useState<Record<string, string>>({
+    used_at: today(),
+    usage: "운영비",
+    payment_method: "카드",
+    transfer_status: "결제 필요",
+    amount: "0"
+  });
 
-  // 7번: 과거 작성한 목적/용도 불러오기 (같은 단어 재사용 유도)
+  useEffect(() => {
+    const saved = draftStore.read(draftKey) as Record<string, string> | null;
+    if (saved && Object.keys(saved).length && window.confirm("저장하지 못한 지출결의 입력 내용이 있습니다. 이어서 작성할까요?")) {
+      setAnswers((prev) => ({ ...prev, ...saved }));
+    } else if (saved) {
+      draftStore.clear(draftKey);
+    }
+  }, []);
+
+  useEffect(() => {
+    draftStore.write(draftKey, answers);
+  }, [answers]);
+
   useEffect(() => {
     supabase.from("expense_requests").select("purpose").order("created_at", { ascending: false }).limit(200).then(({ data }) => {
       if (data) {
@@ -2854,84 +2985,240 @@ function ExpenseForm({
     });
   }, []);
 
-  return (
-    <>
-      <ModalHead title="지출결의 등록" desc="영수증을 올리면 Storage에 저장됩니다. 노션 지출결의 기준(사용 용도·결제방식·이체 여부)으로 입력합니다." onClose={onClose} />
-      <form
-        className="modal-form"
-        onSubmit={async (event) => {
-          event.preventDefault();
-          setBusy(true);
-          await onSubmit(new FormData(event.currentTarget));
-          setBusy(false);
-        }}
-      >
-        <label>사용일<input type="date" name="used_at" defaultValue={today()} required /></label>
+  function setField(key: string, value: string) {
+    setAnswers((prev) => ({ ...prev, [key]: value }));
+  }
 
-        {/* 7번: 목적 및 용도 - 과거 입력 자동완성 */}
-        <label>목적 및 용도
-          <input name="purpose" required placeholder="지출 목적을 입력하세요" list="past-purposes" />
-          <datalist id="past-purposes">
-            {pastPurposes.map((p) => <option key={p} value={p} />)}
-          </datalist>
-        </label>
+  const usage = (answers.usage as ExpenseUsage) || "운영비";
+  const method = (answers.payment_method as PaymentMethod) || "카드";
 
-        {/* 사용 용도(카테고리) */}
-        <label>사용 용도
-          <select name="usage" value={usage} onChange={(e) => setUsage(e.target.value as ExpenseUsage)}>
-            {expenseUsages.map((c) => <option key={c}>{c}</option>)}
-            {categories.filter((c) => !expenseUsages.includes(c.name as ExpenseUsage)).map((c) => <option key={c.id}>{c.name}</option>)}
-          </select>
-        </label>
-
-        <label>금액<input name="amount" defaultValue="0" /></label>
-
-        {/* 8번: 결제방식 → 카드 선택 시 카드 종류(법인/개인-소유자) */}
-        <label>결제방식
-          <select name="payment_method" value={method} onChange={(e) => setMethod(e.target.value as PaymentMethod)}>
-            {paymentMethods.map((m) => <option key={m}>{m}</option>)}
-          </select>
-        </label>
-        {method === "카드" && (
-          <label>카드 종류
-            <select name="card_id">
-              <option value="">선택</option>
+  const steps: WizardStep[] = [
+    {
+      key: "used_at",
+      title: "지출일이 언제인가요?",
+      body: <input type="date" value={answers.used_at || today()} onChange={(e) => setField("used_at", e.target.value)} />
+    },
+    {
+      key: "purpose",
+      title: "어떤 지출인가요? (목적·용도)",
+      required: true,
+      body: (
+        <>
+          <input autoFocus value={answers.purpose || ""} onChange={(e) => setField("purpose", e.target.value)} placeholder="예: 행사 다과 구입" list="wizard-past-purposes" />
+          <datalist id="wizard-past-purposes">{pastPurposes.map((p) => <option key={p} value={p} />)}</datalist>
+        </>
+      )
+    },
+    {
+      key: "usage",
+      title: "사용 용도(카테고리)를 골라 주세요.",
+      hint: usageGuide[usage] || categories.find((c) => c.name === usage)?.description || undefined,
+      body: (
+        <select value={usage} onChange={(e) => setField("usage", e.target.value)}>
+          {expenseUsages.map((c) => <option key={c}>{c}</option>)}
+          {categories.filter((c) => !expenseUsages.includes(c.name as ExpenseUsage)).map((c) => <option key={c.id}>{c.name}</option>)}
+        </select>
+      )
+    },
+    {
+      key: "amount",
+      title: "금액은 얼마인가요?",
+      required: true,
+      body: <input value={answers.amount || ""} onChange={(e) => setField("amount", formatMoneyInputValue(e.target.value))} inputMode="numeric" placeholder="금액" />
+    },
+    {
+      key: "payment_method",
+      title: "어떻게 결제했나요?",
+      body: (
+        <div className="wizard-stack">
+          <select value={method} onChange={(e) => setField("payment_method", e.target.value)}>{paymentMethods.map((m) => <option key={m}>{m}</option>)}</select>
+          {method === "카드" && (
+            <select value={answers.card_id || ""} onChange={(e) => setField("card_id", e.target.value)}>
+              <option value="">카드 선택</option>
               {cards.map((c) => <option key={c.id} value={c.id}>{c.label}</option>)}
             </select>
-            {cards.length === 0 && <span className="field-hint">등록된 카드가 없습니다. 지출결의 화면 우측 상단에서 카드를 먼저 등록하세요.</span>}
-          </label>
-        )}
-
-        {/* 9번: 이체 상태 선택 */}
-        <label>이체 여부<select name="transfer_status" defaultValue="결제 필요">{transferStatuses.map((t) => <option key={t}>{t}</option>)}</select></label>
-
-        <label>연결 프로젝트<select name="project_id"><option value="">선택 안 함</option>{projects.map((p) => <option value={p.id} key={p.id}>{p.name}</option>)}</select></label>
-        <label className="wide">이체 내용 요약<textarea name="transfer_summary" placeholder="계좌, 받는 분, 금액 등 필요한 내용을 입력하세요" /></label>
-        <label>영수증 사진<span className="field-hint">OCR은 JPG/PNG/WEBP 같은 이미지 영수증을 기준으로 인식합니다.</span><input type="file" name="receipt" accept="image/*" /></label>
-        <label className="wide">메모<textarea name="memo" /></label>
-
-        {/* 7번: 사용 용도별 설명 - 팝업 하단 */}
-        <div className="usage-guide wide">
-          <div className="usage-guide-title">카테고리(사용 용도)별 설명</div>
-          <div className="usage-guide-current">
-            <strong>{usage}</strong>
-            <span>{usageGuide[usage] || categories.find((c) => c.name === usage)?.description || "설명 없음"}</span>
-          </div>
-          <details>
-            <summary>전체 카테고리 설명 보기</summary>
-            <ul>
-              {expenseUsages.map((u) => (
-                <li key={u}><b>{u}</b> — {usageGuide[u]}</li>
-              ))}
-            </ul>
-          </details>
+          )}
+          {method === "카드" && cards.length === 0 && <span className="field-hint">등록된 카드가 없습니다. 지출결의 화면에서 카드를 먼저 등록하세요.</span>}
         </div>
+      )
+    },
+    {
+      key: "transfer_status",
+      title: "이체(지급) 상태는 어떤가요?",
+      body: <select value={answers.transfer_status || "결제 필요"} onChange={(e) => setField("transfer_status", e.target.value)}>{transferStatuses.map((t) => <option key={t}>{t}</option>)}</select>
+    },
+    {
+      key: "project_id",
+      title: "연결할 프로젝트가 있나요?",
+      body: (
+        <select value={answers.project_id || ""} onChange={(e) => setField("project_id", e.target.value)}>
+          <option value="">선택 안 함</option>
+          {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+        </select>
+      )
+    },
+    {
+      key: "transfer_summary",
+      title: "이체 내용(받는 분·계좌 등)이 있나요?",
+      body: <textarea value={answers.transfer_summary || ""} onChange={(e) => setField("transfer_summary", e.target.value)} placeholder="계좌, 받는 분, 금액 등 필요한 내용" />
+    },
+    {
+      key: "receipt",
+      title: "영수증 사진이 있나요?",
+      hint: "이미지(JPG/PNG/WEBP)면 자동 인식(OCR)을 시도합니다. 사진은 임시저장되지 않아요.",
+      body: <input type="file" accept="image/*" onChange={(e) => setFile(e.target.files?.[0] || null)} />
+    },
+    {
+      key: "memo",
+      title: "메모를 남길까요?",
+      body: <textarea value={answers.memo || ""} onChange={(e) => setField("memo", e.target.value)} placeholder="특이사항" />
+    }
+  ];
 
-        <div className="modal-actions">
-          <button className="btn blue" disabled={busy}>{busy ? "저장 중" : "저장"}</button>
+  async function submit() {
+    const formData = new FormData();
+    Object.entries(answers).forEach(([key, value]) => formData.append(key, value));
+    if (file) formData.append("receipt", file);
+    setBusy(true);
+    setMessage("");
+    try {
+      await onSubmit(formData);
+      draftStore.clear(draftKey);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "지출결의 등록에 실패했습니다. 입력 내용은 임시저장했어요.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <WizardShell
+      title="질문형 지출결의 등록"
+      desc="답하면 다음 질문으로 넘어갑니다."
+      steps={steps}
+      answers={answers}
+      busy={busy}
+      message={message}
+      submitLabel="지출결의 등록"
+      summaryPrimary={answers.purpose || "목적 미입력"}
+      summarySecondary={`${answers.usage || "운영비"} · ${answers.amount || "0"}원`}
+      onSubmit={submit}
+      onClose={onClose}
+    />
+  );
+}
+
+// 반복 지출(구독) 등록 - 질문형 + 임시저장
+function RecurringWizardForm({
+  cards, onSubmit, onClose
+}: {
+  cards: PaymentCard[];
+  onSubmit: (formData: FormData) => Promise<void>;
+  onClose: () => void;
+}) {
+  const draftKey = "lupl.draft.recurringWizard";
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState("");
+  const [answers, setAnswers] = useState<Record<string, string>>({
+    recurring_cycle: "매월",
+    payment_method: "카드",
+    used_at: today(),
+    amount: "0"
+  });
+
+  useEffect(() => {
+    const saved = draftStore.read(draftKey) as Record<string, string> | null;
+    if (saved && Object.keys(saved).length && window.confirm("저장하지 못한 반복 지출 입력 내용이 있습니다. 이어서 작성할까요?")) {
+      setAnswers((prev) => ({ ...prev, ...saved }));
+    } else if (saved) {
+      draftStore.clear(draftKey);
+    }
+  }, []);
+
+  useEffect(() => {
+    draftStore.write(draftKey, answers);
+  }, [answers]);
+
+  function setField(key: string, value: string) {
+    setAnswers((prev) => ({ ...prev, [key]: value }));
+  }
+
+  const method = (answers.payment_method as PaymentMethod) || "카드";
+
+  const steps: WizardStep[] = [
+    {
+      key: "purpose",
+      title: "어떤 정기 지출인가요? (서비스·항목명)",
+      required: true,
+      body: <input autoFocus value={answers.purpose || ""} onChange={(e) => setField("purpose", e.target.value)} placeholder="예: ChatGPT 구독, 도메인 갱신" />
+    },
+    {
+      key: "recurring_cycle",
+      title: "결제 주기는 어떻게 되나요?",
+      body: <select value={answers.recurring_cycle || "매월"} onChange={(e) => setField("recurring_cycle", e.target.value)}><option>매월</option><option>매분기</option><option>매년</option></select>
+    },
+    {
+      key: "amount",
+      title: "결제 금액은 얼마인가요?",
+      required: true,
+      body: <input value={answers.amount || ""} onChange={(e) => setField("amount", formatMoneyInputValue(e.target.value))} inputMode="numeric" placeholder="결제 금액" />
+    },
+    {
+      key: "payment_method",
+      title: "어떻게 결제하나요?",
+      body: (
+        <div className="wizard-stack">
+          <select value={method} onChange={(e) => setField("payment_method", e.target.value)}>{paymentMethods.map((m) => <option key={m}>{m}</option>)}</select>
+          {method === "카드" && (
+            <select value={answers.card_id || ""} onChange={(e) => setField("card_id", e.target.value)}>
+              <option value="">카드 선택</option>
+              {cards.map((c) => <option key={c.id} value={c.id}>{c.label}</option>)}
+            </select>
+          )}
         </div>
-      </form>
-    </>
+      )
+    },
+    {
+      key: "used_at",
+      title: "다음 결제 예정일은 언제인가요?",
+      body: <input type="date" value={answers.used_at || today()} onChange={(e) => setField("used_at", e.target.value)} />
+    },
+    {
+      key: "memo",
+      title: "메모를 남길까요? (해지 조건·담당자 등)",
+      body: <textarea value={answers.memo || ""} onChange={(e) => setField("memo", e.target.value)} placeholder="해지 조건, 담당자 등" />
+    }
+  ];
+
+  async function submit() {
+    const formData = new FormData();
+    Object.entries(answers).forEach(([key, value]) => formData.append(key, value));
+    setBusy(true);
+    setMessage("");
+    try {
+      await onSubmit(formData);
+      draftStore.clear(draftKey);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "반복 지출 등록에 실패했습니다. 입력 내용은 임시저장했어요.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <WizardShell
+      title="질문형 반복 지출(구독) 등록"
+      desc="답하면 다음 질문으로 넘어갑니다."
+      steps={steps}
+      answers={answers}
+      busy={busy}
+      message={message}
+      submitLabel="반복 지출 등록"
+      summaryPrimary={answers.purpose || "항목 미입력"}
+      summarySecondary={`${answers.recurring_cycle || "매월"} · ${answers.amount || "0"}원`}
+      onSubmit={submit}
+      onClose={onClose}
+    />
   );
 }
 
@@ -3186,28 +3473,74 @@ function SalaryFields({ person }: { person: Person | null }) {
 }
 
 function FormModal({
-  title, desc, children, onSubmit, onClose
+  title, desc, children, onSubmit, onClose, draftKey
 }: {
   title: string;
   desc: string;
   children: React.ReactNode;
   onSubmit: (formData: FormData) => Promise<void>;
   onClose: () => void;
+  draftKey?: string;
 }) {
   const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState("");
+  const formRef = useRef<HTMLFormElement>(null);
+
+  // 마운트 시 임시저장된 내용이 있으면 복구 여부를 묻는다.
+  useEffect(() => {
+    if (!draftKey) return;
+    const saved = draftStore.read(draftKey);
+    if (!saved || Object.keys(saved).length === 0) return;
+    if (!window.confirm("이전에 저장하지 못한 입력 내용이 있습니다. 이어서 작성할까요?")) {
+      draftStore.clear(draftKey);
+      return;
+    }
+    const form = formRef.current;
+    if (!form) return;
+    Object.entries(saved).forEach(([name, value]) => {
+      const elements = form.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>(`[name="${name}"]`);
+      elements.forEach((el) => {
+        if (el instanceof HTMLInputElement && (el.type === "checkbox" || el.type === "radio")) {
+          el.checked = value === "on" || value === el.value;
+        } else if (el.type !== "file") {
+          el.value = String(value ?? "");
+        }
+      });
+    });
+  }, [draftKey]);
+
+  function serialize(formData: FormData): Record<string, string> {
+    const obj: Record<string, string> = {};
+    formData.forEach((value, key) => {
+      if (typeof value === "string") obj[key] = value; // File 은 임시저장하지 않음
+    });
+    return obj;
+  }
+
   return (
     <>
       <ModalHead title={title} desc={desc} onClose={onClose} />
       <form
+        ref={formRef}
         className="modal-form"
         onSubmit={async (event) => {
           event.preventDefault();
+          const formData = new FormData(event.currentTarget);
           setBusy(true);
-          await onSubmit(new FormData(event.currentTarget));
-          setBusy(false);
+          setMessage("");
+          try {
+            await onSubmit(formData);
+            if (draftKey) draftStore.clear(draftKey); // 성공 시 임시저장 삭제
+          } catch (error) {
+            if (draftKey) draftStore.write(draftKey, serialize(formData)); // 실패 시 임시저장
+            setMessage(error instanceof Error ? error.message : "저장에 실패했습니다. 입력 내용은 임시저장했어요.");
+          } finally {
+            setBusy(false);
+          }
         }}
       >
         {children}
+        {message && <div className="form-help wide" style={{ color: "#c0392b" }}>{message}</div>}
         <div className="modal-actions">
           <button className="btn blue" disabled={busy}>{busy ? "저장 중" : "저장"}</button>
         </div>
