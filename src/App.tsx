@@ -11,7 +11,7 @@ import {
   Tags,
   Upload
 } from "lucide-react";
-import { supabase } from "./lib/supabase";
+import { isSupabaseConfigured, supabase } from "./lib/supabase";
 import type {
   BonusPayment,
   BusinessProject,
@@ -52,6 +52,7 @@ type ModalKey =
   | "projectDetail"
   | "employeeDetail"
   | "projectForm"
+  | "projectWizard"
   | "expenseForm"
   | "recurringForm"
   | "personForm"
@@ -211,8 +212,32 @@ function handleMoneyInput(event: React.FormEvent<HTMLInputElement>) {
   input.value = formatMoneyInputValue(input.value);
 }
 
+function formatPhoneNumber(value: string) {
+  const digits = value.replace(/[^0-9]/g, "").slice(0, 11);
+  if (digits.length <= 3) return digits;
+  if (digits.length <= 7) return `${digits.slice(0, 3)}-${digits.slice(3)}`;
+  return `${digits.slice(0, 3)}-${digits.slice(3, 7)}-${digits.slice(7)}`;
+}
+
+function handlePhoneInput(event: React.FormEvent<HTMLInputElement>) {
+  const input = event.currentTarget;
+  input.value = formatPhoneNumber(input.value);
+}
+
 function calcMonthlyCapacity(weeklyDays: number, dailyHours: number) {
-  return Math.round((weeklyDays || 0) * (dailyHours || 0) * 4.345);
+  const weeklyWorkHours = Math.min(40, (weeklyDays || 0) * (dailyHours || 0));
+  const paidWeeklyHolidayHours = weeklyWorkHours >= 15 ? Math.min(8, weeklyWorkHours / 5) : 0;
+  return Math.round((weeklyWorkHours + paidWeeklyHolidayHours) * 365 / 7 / 12);
+}
+
+function calcHourlyWage(annualSalary: number, monthlyHours: number) {
+  if (!annualSalary || !monthlyHours) return 0;
+  return Math.round(annualSalary / 12 / monthlyHours);
+}
+
+function calcAnnualSalary(hourlyWage: number, monthlyHours: number) {
+  if (!hourlyWage || !monthlyHours) return 0;
+  return Math.round(hourlyWage * monthlyHours * 12);
 }
 
 function today() {
@@ -501,6 +526,19 @@ export default function App() {
   }
 
   // 16,17번: 프로젝트 생성 - 상태 선택, 매출=확정금액, 비용은 지출결의 자동집계 + 책임자/연락처 등 외주용역 필드
+  async function deleteReviewItem(review: ReviewItem) {
+    if (!window.confirm("이 검토 항목을 삭제할까요? 연결된 원본 데이터는 그대로 두고 검토함에서만 삭제됩니다.")) return;
+    try {
+      const { error } = await supabase.from("review_items").delete().eq("id", review.id);
+      if (error) throw error;
+      showToast("검토 항목을 삭제했습니다.");
+      setModal(null);
+      await loadAll();
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : "검토 항목 삭제 실패", "err");
+    }
+  }
+
   async function createProject(formData: FormData) {
     try {
       const major = String(formData.get("project_major_category") || "");
@@ -522,14 +560,20 @@ export default function App() {
         receipt_status: (String(formData.get("receipt_status") || "미청구") || null) as ReceiptStatus | null,
         owner_label: String(formData.get("owner_label") || "") || null,
         operator_label: String(formData.get("operator_label") || "") || null,
-        contact: String(formData.get("contact") || "") || null,
+        contact: [
+          String(formData.get("client_contact_name") || ""),
+          String(formData.get("client_contact_phone") || "")
+        ].filter(Boolean).join(" / ") || String(formData.get("contact") || "") || null,
         inflow_route: String(formData.get("inflow_route") || "") || null,
         payment_due_date: String(formData.get("payment_due_date") || "") || null,
         due_date: String(formData.get("due_date") || "") || null,
         tax_invoice_date: String(formData.get("tax_invoice_date") || "") || null,
         repeat_client: formData.get("repeat_client") === "on",
         owner_id: currentPerson?.id || null,
-        memo: String(formData.get("memo") || "")
+        memo: [
+          String(formData.get("payment_due_cycle") || "") === "monthly" ? "입금 예정: 매월 반복" : "",
+          String(formData.get("memo") || "")
+        ].filter(Boolean).join("\n")
       };
 
       const { data, error } = await supabase.from("business_projects").insert(payload).select().single();
@@ -578,6 +622,9 @@ export default function App() {
           const { data: ocrData, error: ocrError } = await supabase.functions.invoke("receipt-ocr", {
             body: { storagePath }
           });
+          if (ocrError) {
+            showToast(`OCR 실행 실패: ${ocrError.message}`, "warn");
+          }
           if (!ocrError && ocrData) {
             ocrResult = ocrData as Record<string, unknown>;
             if (ocrResult.error || ocrResult.raw_text === "OPENAI_API_KEY is not configured.") {
@@ -858,7 +905,9 @@ export default function App() {
       const revenue = autoRevenue;
       const receivable = projectsComputed.reduce((sum, project) => sum + Number(project._receivable || 0), 0);
       const payable = expenses.filter((expense) => expense.review_status !== "승인").reduce((sum, expense) => sum + Number(expense.amount || 0), 0);
-      const currentCash = parseNumber(formData.get("current_cash"));
+      const accountBalances = formData.getAll("account_balance").map((value) => parseNumber(value));
+      const accountTotal = accountBalances.reduce((sum, value) => sum + value, 0);
+      const currentCash = accountTotal || parseNumber(formData.get("current_cash"));
       const netBurn = Math.max(0, expense - revenue);
       const payload = {
         snapshot_month: `${monthInput}-01`,
@@ -874,6 +923,50 @@ export default function App() {
 
       const { error } = await supabase.from("cash_snapshots").upsert(payload, { onConflict: "snapshot_month" });
       if (error) throw error;
+      const transferNames = formData.getAll("auto_transfer_purpose").map(String);
+      const transferAmounts = formData.getAll("auto_transfer_amount");
+      const transferDates = formData.getAll("auto_transfer_date").map(String);
+      const transferMemos = formData.getAll("auto_transfer_memo").map(String);
+      const transfers = transferNames
+        .map((purpose, index) => ({
+          used_at: transferDates[index] || today(),
+          purpose: purpose.trim(),
+          usage: "운영비" as ExpenseUsage,
+          payment_method: "계좌이체" as PaymentMethod,
+          card_id: null,
+          amount: parseNumber(transferAmounts[index]),
+          evidence_status: "자동이체 처리",
+          transfer_status: "결제 완료" as TransferStatus,
+          transfer_summary: transferMemos[index] || null,
+          project_id: null,
+          requested_by: currentPerson?.id || null,
+          review_status: "검토 전" as ReviewStatus,
+          review_reason: "계좌별 현금 입력에서 등록한 자동이체",
+          receipt_file_url: null,
+          receipt_storage_path: null,
+          ocr_vendor_name: null,
+          ocr_total_amount: null,
+          ocr_transaction_date: null,
+          is_recurring: false,
+          memo: "현금 현황 입력에서 자동이체로 등록"
+        }))
+        .filter((item) => item.purpose && item.amount > 0);
+
+      if (transfers.length > 0) {
+        const { data: inserted, error: transferError } = await supabase.from("expense_requests").insert(transfers).select();
+        if (transferError) throw transferError;
+        await Promise.all((inserted || []).map((expense) => createReviewItem({
+          area: "지출결의",
+          title: expense.purpose,
+          reason: "자동이체 처리 확인",
+          amount_or_impact: formatWon(expense.amount),
+          owner_label: currentPerson?.name || "담당자",
+          status: "검토 전",
+          target_table: "expense_requests",
+          target_id: expense.id,
+          checklist: "자동이체 목적, 금액, 처리일을 확인해 주세요."
+        })));
+      }
       showToast("현금 현황을 자동 계산 기준으로 저장했습니다.");
       setModal(null);
       await loadAll();
@@ -943,6 +1036,235 @@ export default function App() {
       await loadAll();
     } catch (error) {
       showToast(error instanceof Error ? error.message : "삭제 실패", "err");
+    }
+  }
+
+  async function deleteProject(project: BusinessProject) {
+    if (!window.confirm(`"${project.name}" 프로젝트를 삭제할까요? 연결된 검토항목과 투입 정보도 함께 정리됩니다.`)) return;
+    try {
+      const cleanupResults = await Promise.all([
+        supabase.from("review_items").delete().eq("target_table", "business_projects").eq("target_id", project.id),
+        supabase.from("project_labor_allocations").delete().eq("project_id", project.id),
+        supabase.from("bonus_payments").update({ project_id: null }).eq("project_id", project.id),
+        supabase.from("expense_requests").update({ project_id: null }).eq("project_id", project.id)
+      ]);
+      const cleanupError = cleanupResults.find((result) => result.error)?.error;
+      if (cleanupError) throw cleanupError;
+      const { error } = await supabase.from("business_projects").delete().eq("id", project.id);
+      if (error) throw error;
+      showToast("프로젝트를 삭제했습니다.");
+      setSelectedProject(null);
+      setModal(null);
+      await loadAll();
+    } catch (error) {
+      console.error(error);
+      showToast(error instanceof Error ? error.message : "프로젝트 삭제 실패", "err");
+    }
+  }
+
+  async function deleteExpense(expense: ExpenseRequest) {
+    if (!window.confirm(`"${expense.purpose}" 지출결의를 삭제할까요?`)) return;
+    try {
+      const { error: reviewError } = await supabase.from("review_items").delete().eq("target_table", "expense_requests").eq("target_id", expense.id);
+      if (reviewError) throw reviewError;
+      const { error } = await supabase.from("expense_requests").delete().eq("id", expense.id);
+      if (error) throw error;
+      showToast("지출결의를 삭제했습니다.");
+      setSelectedExpense(null);
+      setModal(null);
+      await loadAll();
+    } catch (error) {
+      console.error(error);
+      showToast(error instanceof Error ? error.message : "지출결의 삭제 실패", "err");
+    }
+  }
+
+  async function seedDemoData() {
+    try {
+      const stamp = Date.now().toString().slice(-6);
+      const deptId = departments[0]?.id || null;
+
+      const { data: demoPerson, error: personError } = await supabase
+        .from("people")
+        .upsert({
+          name: "샘플 매니저",
+          employee_number: "900001",
+          email: "demo.manager@lupl.kr",
+          phone: "010-9000-0001",
+          department_id: deptId,
+          rank: "매니저" as Rank,
+          hire_date: "2026-01-02",
+          weekly_work_days: 5,
+          daily_work_hours: 8,
+          monthly_capacity_hours: calcMonthlyCapacity(5, 8),
+          annual_salary: 36000000,
+          previous_annual_salary: 33000000,
+          is_active: true,
+          memo: "더미 데이터 검증용 직원"
+        }, { onConflict: "employee_number" })
+        .select()
+        .single();
+      if (personError) throw personError;
+
+      const { data: card, error: cardError } = await supabase
+        .from("payment_cards")
+        .insert({
+          label: `더미 법인카드 ${stamp}`,
+          card_type: "법인",
+          owner_name: null,
+          is_active: true,
+          sort_order: cards.length + 1
+        })
+        .select()
+        .single();
+      if (cardError) throw cardError;
+
+      const { error: categoryError } = await supabase
+        .from("expense_categories")
+        .insert({
+          name: `더미 검증 카테고리 ${stamp}`,
+          description: "전체 데이터 입력 검증용 카테고리",
+          is_active: true,
+          sort_order: categories.length + 1
+        });
+      if (categoryError) throw categoryError;
+
+      const { data: project, error: projectError } = await supabase
+        .from("business_projects")
+        .insert({
+          name: `더미 프로젝트 ${stamp}`,
+          client_type: "기업" as ClientType,
+          project_group: ["교육"] as ProjectGroup[],
+          project_major_category: "교육",
+          project_middle_category: "AI 교육",
+          project_small_category: "기관 워크숍",
+          client_name: "더미 거래처",
+          status: "진행 중" as ProjectStatus,
+          confirmed_amount: 12000000,
+          received_amount: 5000000,
+          cost: 0,
+          receipt_status: "일부 수령" as ReceiptStatus,
+          owner_label: currentPerson?.name || demoPerson.name,
+          operator_label: demoPerson.name,
+          contact: "demo@client.kr / 010-1111-2222",
+          inflow_route: "직접 문의",
+          man_months: 1.5,
+          request_date: today(),
+          due_date: "2026-07-31",
+          payment_due_date: "2026-08-15",
+          tax_invoice_date: "2026-07-25",
+          repeat_client: true,
+          owner_id: currentPerson?.id || null,
+          pm_id: demoPerson.id,
+          memo: "샘플 프로젝트 생성 및 집계 검증"
+        })
+        .select()
+        .single();
+      if (projectError) throw projectError;
+
+      const { data: expense, error: expenseError } = await supabase
+        .from("expense_requests")
+        .insert({
+          used_at: today(),
+          purpose: `더미 영수증 지출 ${stamp}`,
+          usage: "운영비" as ExpenseUsage,
+          payment_method: "카드" as PaymentMethod,
+          card_id: card.id,
+          amount: 88680,
+          evidence_status: "증빙 필요",
+          transfer_status: "결제 완료" as TransferStatus,
+          transfer_summary: "더미 거래처 / 88680원 / 카드 결제",
+          project_id: project.id,
+          requested_by: currentPerson?.id || demoPerson.id,
+          review_status: "검토 전" as ReviewStatus,
+          review_reason: "더미 지출 검토",
+          receipt_file_url: null,
+          receipt_storage_path: null,
+          ocr_vendor_name: "더미 OCR 거래처",
+          ocr_total_amount: 88680,
+          ocr_transaction_date: today(),
+          is_recurring: false,
+          recurring_cycle: null,
+          memo: "OCR 필드 저장 검증용"
+        })
+        .select()
+        .single();
+      if (expenseError) throw expenseError;
+
+      const demoResults = await Promise.all([
+        supabase.from("review_items").insert({
+          area: "사업·매출",
+          title: `${project.name} 더미 검토`,
+          reason: "더미 프로젝트 생성 검토",
+          amount_or_impact: formatWon(project.confirmed_amount),
+          owner_label: currentPerson?.name || demoPerson.name,
+          status: "검토 전" as ReviewStatus,
+          target_table: "business_projects",
+          target_id: project.id,
+          checklist: "거래처, 금액, 입금예정일, 책임자 입력값을 확인하세요."
+        }),
+        supabase.from("review_items").insert({
+          area: "지출결의",
+          title: expense.purpose,
+          reason: "더미 지출 검토",
+          amount_or_impact: formatWon(expense.amount),
+          owner_label: currentPerson?.name || demoPerson.name,
+          status: "검토 전" as ReviewStatus,
+          target_table: "expense_requests",
+          target_id: expense.id,
+          checklist: "증빙, 사용 용도, 결제수단, 이체 여부를 확인하세요."
+        }),
+        supabase.from("compensation_reviews").insert({
+          person_id: demoPerson.id,
+          review_year: 2026,
+          previous_annual_salary: 33000000,
+          raise_rate: 0.09,
+          confirmed_annual_salary: 36000000,
+          grant_program_name: "더미 지원사업",
+          grant_end_date: "2026-12-31",
+          company_monthly_impact: 250000,
+          review_status: "검토 전" as ReviewStatus,
+          memo: "더미 인건비 검토"
+        }),
+        supabase.from("bonus_payments").insert({
+          person_id: demoPerson.id,
+          project_id: project.id,
+          period_label: "2026 Q2",
+          profit_amount: 11911320,
+          bonus_rate: 0.1,
+          bonus_amount: 1191132,
+          payment_status: "검토 전" as ReviewStatus,
+          planned_payment_date: "2026-08-31",
+          memo: "더미 상여금"
+        }),
+        supabase.from("project_labor_allocations").insert({
+          project_id: project.id,
+          person_id: demoPerson.id,
+          rank: "매니저" as Rank,
+          allocation_rate: 0.35,
+          man_months: 0.35,
+          hours: 56
+        }),
+        supabase.from("cash_snapshots").upsert({
+          snapshot_month: `${today().slice(0, 7)}-01`,
+          current_cash: 50000000,
+          revenue: 5000000,
+          expense: 4200000,
+          net_burn: 0,
+          runway_months: 0,
+          payroll_included_expense: 4200000,
+          receivable_amount: 7000000,
+          payable_amount: 88680
+        }, { onConflict: "snapshot_month" })
+      ]);
+      const demoError = demoResults.find((result) => result.error)?.error;
+      if (demoError) throw demoError;
+
+      showToast("전체 더미 데이터를 주요 화면별로 넣었습니다.");
+      await loadAll();
+    } catch (error) {
+      console.error(error);
+      showToast(error instanceof Error ? error.message : "더미 데이터 입력 실패", "err");
     }
   }
 
@@ -1054,6 +1376,7 @@ export default function App() {
               }
             }}
             onUpdateReview={updateReviewStatus}
+            onDeleteReview={deleteReviewItem}
           />
         )}
         {section === "expense" && (
@@ -1074,7 +1397,7 @@ export default function App() {
           <Revenue
             projects={projectsComputed}
             people={people}
-            onCreate={() => setModal("projectForm")}
+            onCreate={() => setModal("projectWizard")}
             onManageCategory={() => setModal("categoryManage")}
             onOpenProject={(project) => {
               setSelectedProject(project);
@@ -1157,6 +1480,13 @@ export default function App() {
         onDeleteCategory={deleteCategory}
         onCreateCard={createCard}
         onDeleteCard={deleteCard}
+        onDeleteProject={deleteProject}
+        onDeleteExpense={deleteExpense}
+        onDeleteReview={deleteReviewItem}
+        onEditPerson={(person) => {
+          setSelectedPerson(person);
+          setModal("personForm");
+        }}
       />
     </div>
   );
@@ -1187,6 +1517,10 @@ function AuthScreen() {
     setBusy(true);
     setMessage("");
     try {
+      if (!isSupabaseConfigured) {
+        throw new Error("Supabase 연결 설정이 없습니다. .env.local에 VITE_SUPABASE_URL과 VITE_SUPABASE_ANON_KEY를 넣고 서버를 다시 시작하세요.");
+      }
+
       const identifier = String(formData.get("identifier") || "");
       const password = String(formData.get("password") || "");
 
@@ -1271,6 +1605,10 @@ function Overview({
 
   return (
     <section className="section active">
+      <div className="section-toolbar overview-toolbar">
+        <button className="btn blue" onClick={onAddCash}>현재 현금 입력</button>
+      </div>
+
       {reviewCount > 0 && (
         <div className="alert-top">
           <div>
@@ -1347,11 +1685,13 @@ function Overview({
 function ReviewInbox({
   reviews,
   onOpenReview,
-  onUpdateReview
+  onUpdateReview,
+  onDeleteReview
 }: {
   reviews: ReviewItem[];
   onOpenReview: (review: ReviewItem) => void;
   onUpdateReview: (review: ReviewItem, status: ReviewStatus) => void;
+  onDeleteReview: (review: ReviewItem) => void;
 }) {
   const pending = reviews.filter((r) => r.status === "검토 전");
 
@@ -1632,12 +1972,12 @@ function Compensation({
   return (
     <section className="section active">
       {/* 22번: 각 버튼이 맞는 동작을 하도록 - 직원/상여금만 별도, 나머지는 동일 직원등록 표시 제거 */}
-      <div className="quick-actions quick-two">
+      <div className="quick-actions quick-two compensation-actions">
         <QuickCard title="직원 추가" copy="사번 기준 직원 정보 생성" onClick={onCreatePerson} />
         <QuickCard title="상여금 추가" copy="프로젝트 순수익·지급률 기준 자동 계산" onClick={onCreateBonus} />
       </div>
 
-      <div className="grid two">
+      <div className="grid two compensation-layout">
         <div className="card solid">
           <h2 className="card-title">직원·연봉 현황</h2>
           <p className="card-sub">직원명을 누르면 연봉·인상률·상여금·투입 프로젝트 상세가 열립니다.</p>
@@ -1715,7 +2055,7 @@ function Resource({
   onCreateLabor: () => void;
   onOpenProject: (project: ProjectComputed) => void;
 }) {
-  const totalCapacity = people.filter((p) => p.is_active).reduce((sum, p) => sum + Number(p.monthly_capacity_hours || 160), 0);
+  const totalCapacity = people.filter((p) => p.is_active).reduce((sum, p) => sum + Number(p.monthly_capacity_hours || calcMonthlyCapacity(5, 8)), 0);
   const totalHours = labor.reduce((sum, item) => sum + Number(item.hours || 0), 0);
   const totalMm = labor.reduce((sum, item) => sum + Number(item.man_months || 0), 0);
   const totalRevenue = projects.reduce((s, p) => s + p._revenue, 0);
@@ -1922,7 +2262,7 @@ function Modal({
   currentPerson, people, departments, projects, cards, categories, bonuses, labor, compReviews,
   onReviewStatus, onCreateProject, onCreateExpense, onCreateRecurring, onCreatePerson,
   onCreateBonus, onCreateLabor, onCreatePermission, onCreateCash, onCreateCategory,
-  onDeleteCategory, onCreateCard, onDeleteCard
+  onDeleteCategory, onCreateCard, onDeleteCard, onDeleteProject, onDeleteExpense, onDeleteReview, onEditPerson
 }: {
   modal: ModalKey;
   setModal: (modal: ModalKey) => void;
@@ -1952,6 +2292,10 @@ function Modal({
   onDeleteCategory: (id: string) => Promise<void>;
   onCreateCard: (formData: FormData) => Promise<void>;
   onDeleteCard: (id: string) => Promise<void>;
+  onDeleteProject: (project: BusinessProject) => Promise<void>;
+  onDeleteExpense: (expense: ExpenseRequest) => Promise<void>;
+  onDeleteReview: (review: ReviewItem) => Promise<void>;
+  onEditPerson: (person: Person) => void;
 }) {
   if (!modal) return null;
   const close = () => setModal(null);
@@ -1959,10 +2303,14 @@ function Modal({
   return (
     <div className="modal active">
       <div className="modal-card">
+        {modal === "projectWizard" && (
+          <ProjectWizardForm people={people} onSubmit={onCreateProject} onClose={close} />
+        )}
+
         {modal === "projectForm" && (
           <FormModal title="새 프로젝트 등록" desc="외주용역 항목 기준입니다. 비용은 연결된 지출결의에서 자동 집계되므로 입력하지 않습니다." onSubmit={onCreateProject} onClose={close}>
-            <label>프로젝트 내용<input name="name" required placeholder="예: 대구성보학교 AI 창작 교육" /></label>
-            <label>거래처/기관명<input name="client_name" placeholder="예: 대구성보학교" /></label>
+            <label>프로젝트 내용<input name="name" required placeholder="프로젝트명을 입력하세요" /></label>
+            <label>거래처/기관명<input name="client_name" placeholder="거래처 또는 기관명을 입력하세요" /></label>
             <label>거래처 구분<select name="client_type"><option value="">선택</option>{clientTypes.map((c) => <option key={c}>{c}</option>)}</select></label>
             <label>상태<select name="status" defaultValue="접수">{projectStatuses.map((s) => <option key={s}>{s}</option>)}</select></label>
             <label>책임자<select name="owner_label"><option value="">선택</option>{people.map((p) => <option key={p.id} value={p.name}>{p.name}</option>)}</select></label>
@@ -1987,7 +2335,7 @@ function Modal({
 
         {modal === "recurringForm" && (
           <FormModal title="반복 지출(구독) 등록" desc="구독료·정기결제 전용입니다. 주기를 선택하면 검토함에 [정기] 항목으로 등록됩니다." onSubmit={onCreateRecurring} onClose={close}>
-            <label>서비스/항목명<input name="purpose" required placeholder="예: Notion 팀 요금제" /></label>
+            <label>서비스/항목명<input name="purpose" required placeholder="서비스 또는 항목명을 입력하세요" /></label>
             <label>결제 주기<select name="recurring_cycle" defaultValue="매월"><option>매월</option><option>매분기</option><option>매년</option></select></label>
             <label>결제 금액<input name="amount" defaultValue="0" required /></label>
             <label>결제방식<select name="payment_method" defaultValue="카드">{paymentMethods.map((m) => <option key={m}>{m}</option>)}</select></label>
@@ -2008,13 +2356,11 @@ function Modal({
             <label>이름<input name="name" required defaultValue={selectedPerson?.name || ""} placeholder="홍길동" /></label>
             <label>사번<input name="employee_number" inputMode="numeric" pattern="[0-9]*" required={!selectedPerson} defaultValue={selectedPerson?.employee_number || ""} placeholder="20220612001" /></label>
             <label>이메일<span className="field-hint">관리자는 이메일·사번 모두 사용 가능</span><input name="email" type="email" defaultValue={selectedPerson?.email || ""} placeholder="member@lupl.kr" /></label>
-            <label>휴대전화<input name="phone" defaultValue={selectedPerson?.phone || ""} placeholder="010-0000-1234" /></label>
+            <label>휴대전화<input name="phone" defaultValue={formatPhoneNumber(selectedPerson?.phone || "")} onInput={handlePhoneInput} placeholder="010-0000-1234" /></label>
             <label>직위<select name="rank" defaultValue={selectedPerson?.rank || "매니저"}>{ranks.map((rank) => <option key={rank}>{rank}</option>)}</select></label>
             <label>부서<select name="department_id" defaultValue={selectedPerson?.department_id || ""}><option value="">선택 안 함</option>{departments.map((d) => <option value={d.id} key={d.id}>{d.name}</option>)}</select></label>
             <label>입사일<input type="date" name="hire_date" defaultValue={selectedPerson?.hire_date || ""} /></label>
-            <label>계약연봉<input className="money-input" name="annual_salary" defaultValue={formatMoneyInputValue(String(selectedPerson?.annual_salary || ""))} onInput={handleMoneyInput} /></label>
-            <label>전년도 연봉<input className="money-input" name="previous_annual_salary" defaultValue={formatMoneyInputValue(String(selectedPerson?.previous_annual_salary || ""))} onInput={handleMoneyInput} /></label>
-            <CapacityFields person={selectedPerson} />
+            <SalaryFields person={selectedPerson} />
             {selectedPerson?.id === currentPerson.id && (
               <label className="wide">새 비밀번호<span className="field-hint">입력한 경우에만 변경됩니다. 비밀번호는 평문으로 저장하지 않습니다.</span><input name="new_password" type="password" minLength={6} placeholder="새 비밀번호" /></label>
             )}
@@ -2047,11 +2393,7 @@ function Modal({
         )}
 
         {modal === "cashForm" && (
-          <FormModal title="현금 현황 입력" desc="현재 현금만 입력하세요. 매출, 지출, 미수금, 지급예정은 사업·매출관리, 지출결의, 직원 연봉 데이터에서 자동 계산됩니다." onSubmit={onCreateCash} onClose={close}>
-            <label>기준 월<input type="month" name="snapshot_month" defaultValue={today().slice(0, 7)} required /></label>
-            <label>현재 현금<input name="current_cash" defaultValue="0" /></label>
-            <div className="form-help wide">자동 계산 항목: 수령금액/확정금액, 지출결의 금액, 활성 직원 월급, 미수금, 미승인 지출 예정액</div>
-          </FormModal>
+          <CashForm onSubmit={onCreateCash} onClose={close} />
         )}
 
         {modal === "categoryManage" && (
@@ -2077,6 +2419,10 @@ function Modal({
             compReviews={compReviews}
             onClose={close}
             onReviewStatus={onReviewStatus}
+            onDeleteProject={onDeleteProject}
+            onDeleteExpense={onDeleteExpense}
+            onDeleteReview={onDeleteReview}
+            onEditPerson={onEditPerson}
           />
         )}
       </div>
@@ -2085,6 +2431,349 @@ function Modal({
 }
 
 // 7,8,9번: 지출결의 폼 - 사용용도 설명, 결제방식/카드 대중소분류, 이체상태 선택, 과거 목적 자동완성
+type ProjectWizardStep = {
+  key: string;
+  title: string;
+  required?: boolean;
+  body: React.ReactNode;
+};
+
+function CashForm({
+  onSubmit, onClose
+}: {
+  onSubmit: (formData: FormData) => Promise<void>;
+  onClose: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [accounts, setAccounts] = useState([{ id: crypto.randomUUID(), bank: "", label: "", balance: "" }]);
+  const [transfers, setTransfers] = useState([{ id: crypto.randomUUID(), purpose: "", amount: "", date: today(), memo: "" }]);
+  const total = accounts.reduce((sum, item) => sum + (Number(item.balance.replace(/[^0-9]/g, "")) || 0), 0);
+
+  function updateAccount(id: string, key: "bank" | "label" | "balance", value: string) {
+    setAccounts((items) => items.map((item) => item.id === id ? { ...item, [key]: key === "balance" ? formatMoneyInputValue(value) : value } : item));
+  }
+
+  function updateTransfer(id: string, key: "purpose" | "amount" | "date" | "memo", value: string) {
+    setTransfers((items) => items.map((item) => item.id === id ? { ...item, [key]: key === "amount" ? formatMoneyInputValue(value) : value } : item));
+  }
+
+  return (
+    <>
+      <ModalHead title="현금 현황 입력" desc="은행별·통장별 잔액을 적으면 합계가 현재 현금으로 저장됩니다. 자동이체는 지출결의로 같이 등록됩니다." onClose={onClose} />
+      <form
+        className="modal-form"
+        onSubmit={async (event) => {
+          event.preventDefault();
+          setBusy(true);
+          await onSubmit(new FormData(event.currentTarget));
+          setBusy(false);
+        }}
+      >
+        <label>기준 월<input type="month" name="snapshot_month" defaultValue={today().slice(0, 7)} required /></label>
+        <input type="hidden" name="current_cash" value={total} />
+
+        <div className="wide form-section">
+          <div className="form-section-head">
+            <strong>은행별·통장별 잔액</strong>
+            <button className="btn small" type="button" onClick={() => setAccounts((items) => [...items, { id: crypto.randomUUID(), bank: "", label: "", balance: "" }])}>통장 추가</button>
+          </div>
+          {accounts.map((item, index) => (
+            <div className="inline-row" key={item.id}>
+              <input name="account_bank" value={item.bank} onChange={(event) => updateAccount(item.id, "bank", event.target.value)} placeholder="은행명" />
+              <input name="account_label" value={item.label} onChange={(event) => updateAccount(item.id, "label", event.target.value)} placeholder="통장명" />
+              <input name="account_balance" value={item.balance} onChange={(event) => updateAccount(item.id, "balance", event.target.value)} placeholder="잔액" inputMode="numeric" />
+              <button className="btn small" type="button" onClick={() => setAccounts((items) => items.filter((row) => row.id !== item.id))} disabled={accounts.length === 1}>삭제</button>
+              {index === accounts.length - 1 && <span className="field-hint">합계 {formatWon(total)}</span>}
+            </div>
+          ))}
+        </div>
+
+        <div className="wide form-section">
+          <div className="form-section-head">
+            <strong>자동이체 처리된 지출</strong>
+            <button className="btn small" type="button" onClick={() => setTransfers((items) => [...items, { id: crypto.randomUUID(), purpose: "", amount: "", date: today(), memo: "" }])}>자동이체 추가</button>
+          </div>
+          {transfers.map((item) => (
+            <div className="inline-row transfer-row" key={item.id}>
+              <input name="auto_transfer_purpose" value={item.purpose} onChange={(event) => updateTransfer(item.id, "purpose", event.target.value)} placeholder="목적/내용" />
+              <input name="auto_transfer_amount" value={item.amount} onChange={(event) => updateTransfer(item.id, "amount", event.target.value)} placeholder="금액" inputMode="numeric" />
+              <input name="auto_transfer_date" type="date" value={item.date} onChange={(event) => updateTransfer(item.id, "date", event.target.value)} />
+              <input name="auto_transfer_memo" value={item.memo} onChange={(event) => updateTransfer(item.id, "memo", event.target.value)} placeholder="메모" />
+              <button className="btn small" type="button" onClick={() => setTransfers((items) => items.filter((row) => row.id !== item.id))} disabled={transfers.length === 1}>삭제</button>
+            </div>
+          ))}
+        </div>
+
+        <div className="form-help wide">통장별 잔액은 합계 계산용으로 사용되고, 자동이체 항목은 지출결의에 새로 등록됩니다.</div>
+        <div className="modal-actions">
+          <button className="btn" type="button" onClick={onClose}>닫기</button>
+          <button className="btn blue" disabled={busy}>{busy ? "저장 중" : "저장"}</button>
+        </div>
+      </form>
+    </>
+  );
+}
+
+function ProjectWizardForm({
+  people, onSubmit, onClose
+}: {
+  people: Person[];
+  onSubmit: (formData: FormData) => Promise<void>;
+  onClose: () => void;
+}) {
+  const firstMajor = Object.keys(projectCategoryTree)[0] || "기타";
+  const firstMiddle = Object.keys(projectCategoryTree[firstMajor] || {})[0] || "기타";
+  const firstSmall = (projectCategoryTree[firstMajor]?.[firstMiddle] || ["기타"])[0] || "기타";
+  const [step, setStep] = useState(0);
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState("");
+  const [answers, setAnswers] = useState<Record<string, string>>({
+    client_type: "기업",
+    status: "접수",
+    receipt_status: "미청구",
+    inflow_route: "직접 문의",
+    confirmed_amount: "0",
+    received_amount: "0",
+    project_major_category: firstMajor,
+    project_middle_category: firstMiddle,
+    project_small_category: firstSmall,
+    payment_due_cycle: "once",
+    repeat_client: "false"
+  });
+
+  const draftKey = "lupl.projectWizardDraft.v2";
+  const recoveryOfferKey = "lupl.projectWizardRestoreOffer.v1";
+
+  useEffect(() => {
+    const saved = window.localStorage.getItem(draftKey);
+    if (!saved) {
+      if (!window.localStorage.getItem(recoveryOfferKey) && window.confirm("방금 입력하신 이룸고등학교 프로젝트 내용을 복구하시겠습니까?")) {
+        setAnswers((prev) => ({
+          ...prev,
+          name: "이룸고등학교 미디어콘텐츠 교육프로그램(AI 교육)",
+          client_name: "대구이룸고등학교",
+          client_type: "특수학교",
+          status: "진행 중",
+          owner_label: "정혜리",
+          operator_label: "정혜리",
+          confirmed_amount: "9,902,080",
+          received_amount: "2,320,800",
+          receipt_status: "일부 수령",
+          client_contact_phone: "010-9339-4641",
+          due_date: "2026-12-31",
+          payment_due_date: "2026-06-08",
+          payment_due_cycle: "monthly",
+          project_major_category: "교육",
+          project_middle_category: "AI 교육",
+          project_small_category: "특수학교 정규수업",
+          inflow_route: "직접 문의",
+          repeat_client: "true",
+          memo: "매 달 계약된 강사의 통장으로 들어가기 때문에 회수 필요"
+        }));
+        setStep(12);
+      }
+      window.localStorage.setItem(recoveryOfferKey, "shown");
+      return;
+    }
+    try {
+      const parsed = JSON.parse(saved) as { step?: number; answers?: Record<string, string> };
+      if (parsed.answers && window.confirm("작성 중이던 프로젝트가 있습니다. 이어서 작성하시겠습니까?")) {
+        setAnswers((prev) => ({ ...prev, ...parsed.answers }));
+        setStep(Math.min(Math.max(Number(parsed.step || 0), 0), 12));
+      } else {
+        window.localStorage.removeItem(draftKey);
+      }
+    } catch {
+      window.localStorage.removeItem(draftKey);
+    }
+  }, []);
+
+  useEffect(() => {
+    window.localStorage.setItem(draftKey, JSON.stringify({ step, answers }));
+  }, [step, answers]);
+
+  function setField(key: string, value: string) {
+    setAnswers((prev) => ({ ...prev, [key]: value }));
+  }
+
+  function setMajor(value: string) {
+    const nextMiddle = Object.keys(projectCategoryTree[value] || {})[0] || "기타";
+    const nextSmall = (projectCategoryTree[value]?.[nextMiddle] || ["기타"])[0] || "기타";
+    setAnswers((prev) => ({
+      ...prev,
+      project_major_category: value,
+      project_middle_category: nextMiddle,
+      project_small_category: nextSmall
+    }));
+  }
+
+  function setMiddle(value: string) {
+    const major = answers.project_major_category || firstMajor;
+    const nextSmall = (projectCategoryTree[major]?.[value] || ["기타"])[0] || "기타";
+    setAnswers((prev) => ({
+      ...prev,
+      project_middle_category: value,
+      project_small_category: nextSmall
+    }));
+  }
+
+  const major = answers.project_major_category || firstMajor;
+  const middle = answers.project_middle_category || firstMiddle;
+  const middles = Object.keys(projectCategoryTree[major] || {});
+  const smalls = projectCategoryTree[major]?.[middle] || ["기타"];
+
+  function closeWizard() {
+    const hasDraft = Boolean(answers.name || answers.client_name || parseNumber(answers.confirmed_amount || null) > 0);
+    if (hasDraft && !window.confirm("작성 중인 내용은 임시저장됩니다. 나가시겠습니까?")) return;
+    onClose();
+  }
+
+  const steps: ProjectWizardStep[] = [
+    {
+      key: "name",
+      title: "새 프로젝트 명이 뭔가요?",
+      required: true,
+      body: <input autoFocus value={answers.name || ""} onChange={(e) => setField("name", e.target.value)} placeholder="프로젝트명을 입력하세요" />
+    },
+    {
+      key: "client_name",
+      title: "거래처나 기관명은 무엇인가요?",
+      body: <input autoFocus value={answers.client_name || ""} onChange={(e) => setField("client_name", e.target.value)} placeholder="거래처 또는 기관명을 입력하세요" />
+    },
+    {
+      key: "client_type",
+      title: "거래처 구분을 선택해 주세요.",
+      body: <select value={answers.client_type || ""} onChange={(e) => setField("client_type", e.target.value)}>{clientTypes.map((item) => <option key={item}>{item}</option>)}</select>
+    },
+    {
+      key: "status",
+      title: "현재 프로젝트 상태는 어디인가요?",
+      body: <select value={answers.status || "접수"} onChange={(e) => setField("status", e.target.value)}>{projectStatuses.map((item) => <option key={item}>{item}</option>)}</select>
+    },
+    {
+      key: "owner_label",
+      title: "책임자는 누구인가요?",
+      body: <select value={answers.owner_label || ""} onChange={(e) => setField("owner_label", e.target.value)}><option value="">선택 안 함</option>{people.map((person) => <option value={person.name} key={person.id}>{person.name}</option>)}</select>
+    },
+    {
+      key: "operator_label",
+      title: "우리 팀 실무 담당자는 누구인가요?",
+      body: <select value={answers.operator_label || ""} onChange={(e) => setField("operator_label", e.target.value)}><option value="">선택 안 함</option>{people.map((person) => <option value={person.name} key={person.id}>{person.name}</option>)}</select>
+    },
+    {
+      key: "money",
+      title: "확정 금액과 수령 금액을 입력해 주세요.",
+      body: (
+        <div className="wizard-pair">
+          <input value={answers.confirmed_amount || ""} onChange={(e) => setField("confirmed_amount", formatMoneyInputValue(e.target.value))} placeholder="확정 금액" inputMode="numeric" />
+          <input value={answers.received_amount || ""} onChange={(e) => setField("received_amount", formatMoneyInputValue(e.target.value))} placeholder="수령 금액" inputMode="numeric" />
+        </div>
+      )
+    },
+    {
+      key: "receipt_status",
+      title: "대금 수령 상태는 어떤가요?",
+      body: <select value={answers.receipt_status || "미청구"} onChange={(e) => setField("receipt_status", e.target.value)}>{receiptStatuses.map((item) => <option key={item}>{item}</option>)}</select>
+    },
+    {
+      key: "client_contact",
+      title: "요청 기관 담당자 정보를 적어 주세요.",
+      body: (
+        <div className="wizard-pair">
+          <input autoFocus value={answers.client_contact_name || ""} onChange={(e) => setField("client_contact_name", e.target.value)} placeholder="기관 담당자 이름" />
+          <input value={answers.client_contact_phone || ""} onChange={(e) => setField("client_contact_phone", formatPhoneNumber(e.target.value))} placeholder="010-0000-0000" inputMode="tel" />
+        </div>
+      )
+    },
+    {
+      key: "dates",
+      title: "마감일과 입금 예정일을 넣어 주세요.",
+      body: (
+        <div className="wizard-stack">
+          <div className="wizard-pair">
+            <label>마감일<input type="date" value={answers.due_date || ""} onChange={(e) => setField("due_date", e.target.value)} /></label>
+            <label>입금 예정일<input type="date" value={answers.payment_due_date || ""} onChange={(e) => setField("payment_due_date", e.target.value)} /></label>
+          </div>
+          <label className="check-label"><input type="checkbox" checked={answers.payment_due_cycle === "monthly"} onChange={(e) => setField("payment_due_cycle", e.target.checked ? "monthly" : "once")} /><span>매월 입금 예정입니다</span></label>
+        </div>
+      )
+    },
+    {
+      key: "category",
+      title: "프로젝트 분류를 골라 주세요.",
+      body: (
+        <div className="wizard-stack category-picked">
+          <select className="wizard-selected" value={major} onChange={(e) => setMajor(e.target.value)}>{Object.keys(projectCategoryTree).map((item) => <option key={item}>{item}</option>)}</select>
+          <select className="wizard-selected" value={middle} onChange={(e) => setMiddle(e.target.value)}>{middles.map((item) => <option key={item}>{item}</option>)}</select>
+          <select className="wizard-selected" value={answers.project_small_category || firstSmall} onChange={(e) => setField("project_small_category", e.target.value)}>{smalls.map((item) => <option key={item}>{item}</option>)}</select>
+        </div>
+      )
+    },
+    {
+      key: "extra",
+      title: "유입 경로와 반복 고객 여부를 정해 주세요.",
+      body: (
+        <div className="wizard-stack">
+          <select value={answers.inflow_route || ""} onChange={(e) => setField("inflow_route", e.target.value)}>{inflowRoutes.map((item) => <option key={item}>{item}</option>)}</select>
+          <label className="check-label"><input type="checkbox" checked={answers.repeat_client === "true"} onChange={(e) => setField("repeat_client", e.target.checked ? "true" : "false")} /><span>반복 가능 고객입니다</span></label>
+        </div>
+      )
+    },
+    {
+      key: "memo",
+      title: "마지막으로 메모가 있나요?",
+      body: <textarea autoFocus value={answers.memo || ""} onChange={(e) => setField("memo", e.target.value)} placeholder="특이사항, 계약 조건, 참고 내용" />
+    }
+  ];
+
+  const current = steps[step];
+  const canGoNext = !current.required || Boolean((answers[current.key] || "").trim());
+
+  async function submitWizard() {
+    const formData = new FormData();
+    Object.entries(answers).forEach(([key, value]) => {
+      if (key === "repeat_client") {
+        if (value === "true") formData.append("repeat_client", "on");
+      } else {
+        formData.append(key, value);
+      }
+    });
+    setBusy(true);
+    setMessage("");
+    try {
+      await onSubmit(formData);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "프로젝트 등록에 실패했습니다. 입력 내용은 임시저장되어 있습니다.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <>
+      <ModalHead title="질문형 프로젝트 등록" desc={`${step + 1}/${steps.length} 단계 · 답하면 다음 질문으로 넘어갑니다.`} onClose={closeWizard} />
+      <div className="wizard-card">
+        <div className="wizard-progress"><span style={{ width: `${((step + 1) / steps.length) * 100}%` }} /></div>
+        <h3>{current.title}</h3>
+        <div className="wizard-field">{current.body}</div>
+        {message && <div className="form-help">{message}</div>}
+        <div className="wizard-summary">
+          <strong>{answers.name || "프로젝트명 미입력"}</strong>
+          <span>{answers.client_name || "거래처 미입력"} · {answers.confirmed_amount || "0"}원</span>
+        </div>
+      </div>
+      <div className="modal-actions">
+        <button className="btn" type="button" onClick={() => setStep((value) => Math.max(0, value - 1))} disabled={step === 0 || busy}>이전</button>
+        {step < steps.length - 1 ? (
+          <button className="btn blue" type="button" onClick={() => setStep((value) => value + 1)} disabled={!canGoNext || busy}>다음 질문</button>
+        ) : (
+          <button className="btn blue" type="button" onClick={submitWizard} disabled={busy || !answers.name}>{busy ? "저장 중" : "프로젝트 만들기"}</button>
+        )}
+      </div>
+    </>
+  );
+}
+
 function ExpenseForm({
   cards, categories, projects, onSubmit, onClose
 }: {
@@ -2125,7 +2814,7 @@ function ExpenseForm({
 
         {/* 7번: 목적 및 용도 - 과거 입력 자동완성 */}
         <label>목적 및 용도
-          <input name="purpose" required placeholder="예: AI 교육 외부강사비" list="past-purposes" />
+          <input name="purpose" required placeholder="지출 목적을 입력하세요" list="past-purposes" />
           <datalist id="past-purposes">
             {pastPurposes.map((p) => <option key={p} value={p} />)}
           </datalist>
@@ -2161,8 +2850,8 @@ function ExpenseForm({
         <label>이체 여부<select name="transfer_status" defaultValue="결제 필요">{transferStatuses.map((t) => <option key={t}>{t}</option>)}</select></label>
 
         <label>연결 프로젝트<select name="project_id"><option value="">선택 안 함</option>{projects.map((p) => <option value={p.id} key={p.id}>{p.name}</option>)}</select></label>
-        <label className="wide">이체 내용 요약<textarea name="transfer_summary" placeholder="예: 국민은행 / 642001-04-487420 / 기업명 / 이경화 / 86,680원" /></label>
-        <label>영수증 사진<input type="file" name="receipt" accept="image/*,.pdf" /></label>
+        <label className="wide">이체 내용 요약<textarea name="transfer_summary" placeholder="계좌, 받는 분, 금액 등 필요한 내용을 입력하세요" /></label>
+        <label>영수증 사진<span className="field-hint">OCR은 JPG/PNG/WEBP 같은 이미지 영수증을 기준으로 인식합니다.</span><input type="file" name="receipt" accept="image/*" /></label>
         <label className="wide">메모<textarea name="memo" /></label>
 
         {/* 7번: 사용 용도별 설명 - 팝업 하단 */}
@@ -2315,7 +3004,7 @@ function CardManage({
           setBusy(false);
         }}
       >
-        <input name="label" placeholder="카드명 예: 법인 신한 1234" required />
+        <input name="label" placeholder="카드명을 입력하세요" required />
         <select name="card_type" value={cardType} onChange={(e) => setCardType(e.target.value as "법인" | "개인")}>
           <option value="법인">법인</option>
           <option value="개인">개인</option>
@@ -2376,20 +3065,64 @@ function ProjectCategoryFields() {
   );
 }
 
-function CapacityFields({ person }: { person: Person | null }) {
+function SalaryFields({ person }: { person: Person | null }) {
   const [days, setDays] = useState(Number(person?.weekly_work_days || 5));
   const [hours, setHours] = useState(Number(person?.daily_work_hours || 8));
+  const [annualSalary, setAnnualSalary] = useState(Number(person?.annual_salary || 0));
+  const [monthlySalary, setMonthlySalary] = useState(Math.round(Number(person?.annual_salary || 0) / 12));
+  const [hourlyWage, setHourlyWage] = useState(calcHourlyWage(Number(person?.annual_salary || 0), calcMonthlyCapacity(days, hours)));
   const monthly = calcMonthlyCapacity(days, hours);
+
+  useEffect(() => {
+    setHourlyWage(calcHourlyWage(annualSalary, monthly));
+    setMonthlySalary(Math.round(annualSalary / 12));
+  }, [days, hours]);
+
+  function updateAnnualSalary(value: string) {
+    const nextAnnual = Number(value.replace(/[^0-9]/g, "")) || 0;
+    setAnnualSalary(nextAnnual);
+    setMonthlySalary(Math.round(nextAnnual / 12));
+    setHourlyWage(calcHourlyWage(nextAnnual, monthly));
+  }
+
+  function updateMonthlySalary(value: string) {
+    const nextMonthly = Number(value.replace(/[^0-9]/g, "")) || 0;
+    const nextAnnual = nextMonthly * 12;
+    setMonthlySalary(nextMonthly);
+    setAnnualSalary(nextAnnual);
+    setHourlyWage(calcHourlyWage(nextAnnual, monthly));
+  }
+
+  function updateHourlyWage(value: string) {
+    const nextHourly = Number(value.replace(/[^0-9]/g, "")) || 0;
+    const nextAnnual = calcAnnualSalary(nextHourly, monthly);
+    setHourlyWage(nextHourly);
+    setAnnualSalary(nextAnnual);
+    setMonthlySalary(Math.round(nextAnnual / 12));
+  }
 
   return (
     <>
+      <label>계약연봉
+        <input className="money-input" name="annual_salary" value={formatMoneyInputValue(String(annualSalary || ""))} onChange={(e) => updateAnnualSalary(e.target.value)} />
+      </label>
+      <label>월급
+        <input className="money-input" value={formatMoneyInputValue(String(monthlySalary || ""))} onChange={(e) => updateMonthlySalary(e.target.value)} />
+      </label>
+      <label>시급
+        <input className="money-input" value={formatMoneyInputValue(String(hourlyWage || ""))} onChange={(e) => updateHourlyWage(e.target.value)} />
+      </label>
+      <label>전년도 연봉
+        <input className="money-input" name="previous_annual_salary" defaultValue={formatMoneyInputValue(String(person?.previous_annual_salary || ""))} onInput={handleMoneyInput} />
+      </label>
       <label>주 근무일
         <input name="weekly_work_days" type="number" min="1" max="7" step="0.5" value={days} onChange={(e) => setDays(Number(e.target.value))} />
       </label>
       <label>일 근무시간
         <input name="daily_work_hours" type="number" min="1" max="24" step="0.5" value={hours} onChange={(e) => setHours(Number(e.target.value))} />
       </label>
-      <label>월 가용시간
+      <label>월 소정근로시간
+        <span className="field-hint">주휴시간 포함 급여 산정 기준입니다. 주 5일·일 8시간은 209시간입니다.</span>
         <input name="monthly_capacity_hours" readOnly value={monthly} />
       </label>
     </>
@@ -2430,6 +3163,7 @@ function FormModal({
 function DetailModal({
   modal, selectedReview, selectedProject, selectedExpense, selectedPerson,
   people, cards, projects, bonuses, labor, compReviews, onClose, onReviewStatus
+  , onDeleteProject, onDeleteExpense, onDeleteReview, onEditPerson
 }: {
   modal: ModalKey;
   selectedReview: ReviewItem | null;
@@ -2444,6 +3178,10 @@ function DetailModal({
   compReviews: CompensationReview[];
   onClose: () => void;
   onReviewStatus: (review: ReviewItem, status: ReviewStatus) => Promise<void>;
+  onDeleteProject: (project: BusinessProject) => Promise<void>;
+  onDeleteExpense: (expense: ExpenseRequest) => Promise<void>;
+  onDeleteReview: (review: ReviewItem) => Promise<void>;
+  onEditPerson: (person: Person) => void;
 }) {
   // 20번: 프로젝트 상세 - 인포그래픽 + 매출/비용/순이익
   if (modal === "projectDetail" && selectedProject) {
@@ -2484,7 +3222,10 @@ function DetailModal({
           <Info label="반복 가능 고객" value={p.repeat_client ? "예" : "아니오"} />
           <Info label="메모" value={p.memo || "-"} />
         </div>
-        <ReviewActions selectedReview={selectedReview} onClose={onClose} onReviewStatus={onReviewStatus} />
+        <div className="modal-actions danger-actions">
+          <button className="btn danger" type="button" onClick={() => onDeleteProject(p)}>프로젝트 삭제</button>
+        </div>
+        <ReviewActions selectedReview={selectedReview} onClose={onClose} onReviewStatus={onReviewStatus} onDeleteReview={onDeleteReview} />
       </>
     );
   }
@@ -2514,7 +3255,10 @@ function DetailModal({
           <Info label="투입 프로젝트" value={`${personLabor.length}건 · ${personLabor.reduce((s, l) => s + Number(l.man_months || 0), 0).toFixed(2)}MM`} />
           <Info label="비밀번호 변경" value={selectedPerson.password_changed_at ? formatDateTime(selectedPerson.password_changed_at) : "초기 비밀번호 사용 가능"} />
         </div>
-        <ReviewActions selectedReview={selectedReview} onClose={onClose} onReviewStatus={onReviewStatus} />
+        <div className="modal-actions">
+          <button className="btn blue" type="button" onClick={() => onEditPerson(selectedPerson)}>직원 정보 수정</button>
+        </div>
+        <ReviewActions selectedReview={selectedReview} onClose={onClose} onReviewStatus={onReviewStatus} onDeleteReview={onDeleteReview} />
       </>
     );
   }
@@ -2549,7 +3293,10 @@ function DetailModal({
         {selectedExpense.receipt_file_url && (
           <a className="btn small" href={selectedExpense.receipt_file_url} target="_blank" rel="noreferrer">영수증 파일 열기</a>
         )}
-        <ReviewActions selectedReview={selectedReview} onClose={onClose} onReviewStatus={onReviewStatus} />
+        <div className="modal-actions danger-actions">
+          <button className="btn danger" type="button" onClick={() => onDeleteExpense(selectedExpense)}>지출결의 삭제</button>
+        </div>
+        <ReviewActions selectedReview={selectedReview} onClose={onClose} onReviewStatus={onReviewStatus} onDeleteReview={onDeleteReview} />
       </>
     );
   }
@@ -2570,17 +3317,18 @@ function DetailModal({
         <Info label="담당" value={selectedReview?.owner_label || "-"} />
         <Info label="상태" value={selectedReview?.status || "-"} />
       </div>
-      <ReviewActions selectedReview={selectedReview} onClose={onClose} onReviewStatus={onReviewStatus} />
+      <ReviewActions selectedReview={selectedReview} onClose={onClose} onReviewStatus={onReviewStatus} onDeleteReview={onDeleteReview} />
     </>
   );
 }
 
 function ReviewActions({
-  selectedReview, onClose, onReviewStatus
+  selectedReview, onClose, onReviewStatus, onDeleteReview
 }: {
   selectedReview: ReviewItem | null;
   onClose: () => void;
   onReviewStatus: (review: ReviewItem, status: ReviewStatus) => Promise<void>;
+  onDeleteReview?: (review: ReviewItem) => Promise<void>;
 }) {
   return (
     <div className="modal-actions">
@@ -2589,6 +3337,7 @@ function ReviewActions({
           <button className="btn" onClick={() => onReviewStatus(selectedReview, "수정 요청")}>수정 요청</button>
           <button className="btn" onClick={() => onReviewStatus(selectedReview, "보류")}>보류</button>
           <button className="btn blue" onClick={() => onReviewStatus(selectedReview, "승인")}>승인</button>
+          {onDeleteReview && <button className="btn danger" onClick={() => onDeleteReview(selectedReview)}>검토 항목 삭제</button>}
         </>
       ) : (
         <button className="btn blue" onClick={onClose}>확인</button>

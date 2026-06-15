@@ -58,6 +58,9 @@ Deno.serve(async (req) => {
 
     const fileResponse = await fetch(signed.signedUrl);
     const contentType = fileResponse.headers.get("content-type") || "image/jpeg";
+    if (!contentType.startsWith("image/")) {
+      return json({ error: "Receipt OCR currently supports image files only. Upload JPG, PNG, or WEBP." }, 400);
+    }
     const arrayBuffer = await fileResponse.arrayBuffer();
     const base64 = arrayBufferToBase64(arrayBuffer);
     const dataUrl = `data:${contentType};base64,${base64}`;
@@ -107,7 +110,7 @@ Deno.serve(async (req) => {
 
     const result = await aiResponse.json();
     const content = result.choices?.[0]?.message?.content || "{}";
-    const parsed = JSON.parse(content);
+    const parsed = normalizeReceiptResult(JSON.parse(content));
 
     return json(parsed);
   } catch (error) {
@@ -124,6 +127,37 @@ function arrayBufferToBase64(buffer: ArrayBuffer) {
     binary += String.fromCharCode(...chunk);
   }
   return btoa(binary);
+}
+
+function normalizeReceiptResult(value: Record<string, unknown>) {
+  return {
+    vendor_name: cleanString(value.vendor_name),
+    transaction_date: normalizeDate(value.transaction_date),
+    total_amount: normalizeAmount(value.total_amount),
+    supply_amount: normalizeAmount(value.supply_amount),
+    vat_amount: normalizeAmount(value.vat_amount),
+    purpose: cleanString(value.purpose),
+    raw_text: cleanString(value.raw_text)
+  };
+}
+
+function cleanString(value: unknown) {
+  if (value === null || value === undefined) return null;
+  const text = String(value).trim();
+  return text && text.toLowerCase() !== "null" ? text : null;
+}
+
+function normalizeAmount(value: unknown) {
+  if (value === null || value === undefined) return null;
+  const parsed = Number(String(value).replace(/[^0-9.-]/g, ""));
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function normalizeDate(value: unknown) {
+  const text = cleanString(value);
+  if (!text) return null;
+  const match = text.match(/\d{4}-\d{2}-\d{2}/);
+  return match ? match[0] : null;
 }
 
 function json(body: unknown, status = 200) {
