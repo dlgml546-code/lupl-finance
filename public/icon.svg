@@ -1,10 +1,12 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" fill="none">
   <title>경영관리</title>
-  <text
-    x="256"
-    y="306"
-    text-anchor="middle"
-    dominant-baseline="middle"
-    font-family="'Segoe UI Emoji', 'Apple Color Emoji', 'Noto Color Emoji', sans-serif"
-    font-size="360">📊</text>
+  <path d="M101 266c0-19.9 16.1-36 36-36h22c19.9 0 36 16.1 36 36v158h-94V266Z" fill="#22304D" opacity=".32"/>
+  <path d="M222 180c0-19.9 16.1-36 36-36h22c19.9 0 36 16.1 36 36v244h-94V180Z" fill="#22304D" opacity=".32"/>
+  <path d="M342 83c0-19.9 16.1-36 36-36h22c19.9 0 36 16.1 36 36v341h-94V83Z" fill="#22304D" opacity=".32"/>
+  <path d="M91 254c0-19.9 16.1-36 36-36h22c19.9 0 36 16.1 36 36v157H91V254Z" fill="#5B8DFF"/>
+  <path d="M212 168c0-19.9 16.1-36 36-36h22c19.9 0 36 16.1 36 36v243h-94V168Z" fill="#2FD395"/>
+  <path d="M332 71c0-19.9 16.1-36 36-36h22c19.9 0 36 16.1 36 36v340h-94V71Z" fill="#FFC55C"/>
+  <circle cx="78" cy="123" r="13" fill="#FFEF96"/>
+  <circle cx="395" cy="97" r="18" fill="#FFEF96"/>
+  <circle cx="420" cy="144" r="11" fill="#FFEF96"/>
 </svg>
