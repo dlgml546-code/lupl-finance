@@ -2556,6 +2556,7 @@ function CashForm({
   onClose: () => void;
 }) {
   const draftKey = "lupl.draft.cashForm";
+  const recoveryOfferKey = "lupl.draft.cashFormRestoreOffer.v1";
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [month, setMonth] = useState(today().slice(0, 7));
@@ -2566,7 +2567,21 @@ function CashForm({
   // 저장하지 못한 입력 내용 복구
   useEffect(() => {
     const saved = draftStore.read(draftKey) as { month?: string; accounts?: typeof accounts; transfers?: typeof transfers } | null;
-    if (!saved) return;
+    if (!saved) {
+      if (!window.localStorage.getItem(recoveryOfferKey) && window.confirm("방금 보내신 현금 현황 입력 내용을 불러오시겠습니까?")) {
+        setMonth("2026-06");
+        setAccounts([
+          { id: crypto.randomUUID(), bank: "국민은행", label: "기업운영비용", balance: "1,390,588" },
+          { id: crypto.randomUUID(), bank: "아이뱅크", label: "기술보증기금", balance: "128,153,360" },
+          { id: crypto.randomUUID(), bank: "아이뱅크", label: "운영비 통장", balance: "453,899" }
+        ]);
+        setTransfers([
+          { id: crypto.randomUUID(), purpose: "하나캐피탈(차량 렌트)", amount: "607,090", date: "2026-06-15", memo: "" }
+        ]);
+      }
+      window.localStorage.setItem(recoveryOfferKey, "shown");
+      return;
+    }
     const hasContent = (saved.accounts || []).some((a) => a.bank || a.label || a.balance) || (saved.transfers || []).some((t) => t.purpose || t.amount);
     if (hasContent && window.confirm("저장하지 못한 현금 현황 입력 내용이 있습니다. 이어서 작성할까요?")) {
       if (saved.month) setMonth(saved.month);
