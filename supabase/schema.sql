@@ -80,6 +80,17 @@ alter table if exists public.business_projects add column if not exists project_
 alter table if exists public.business_projects add column if not exists project_small_category text;
 alter table if exists public.business_projects add column if not exists operator_label text;
 
+-- 구버전 배포 DB에 business_category enum/category 컬럼이 남아 있을 때 신규 분류 저장 오류 방지
+do $$
+begin
+  if exists (select 1 from pg_type where typname = 'business_category') then
+    alter type public.business_category add value if not exists '러플 마진 계산기';
+    alter type public.business_category add value if not exists '연구';
+    alter type public.business_category add value if not exists '개발';
+    alter type public.business_category add value if not exists '기타';
+  end if;
+end $$;
+
 do $$
 begin
   if not exists (

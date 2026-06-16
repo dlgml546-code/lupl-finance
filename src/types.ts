@@ -36,7 +36,8 @@ export type ClientType = "일반학교" | "특수학교" | "공공기관" | "기
 // 외주용역 프로젝트 대분류
 export type ProjectGroup =
   | "교육" | "문서작업" | "홈페이지" | "메타버스" | "마케팅"
-  | "행사" | "전시" | "영상" | "제품 제작" | "디자인" | "광고/홍보";
+  | "행사" | "전시" | "영상" | "제품 제작" | "디자인" | "광고/홍보"
+  | "연구" | "개발" | "러플 마진 계산기" | "기타";
 // 외주용역 프로젝트 상태
 export type ProjectStatus =
   | "접수" | "제안/견적" | "컨펌 대기" | "진행 중" | "납품 완료" | "정산 대기" | "정산 완료" | "보류/드롭";
@@ -100,7 +101,7 @@ export type BusinessProject = {
   id: string;
   name: string;
   client_type: ClientType | null;
-  project_group: ProjectGroup[] | null;
+  project_group: string[] | null;
   project_major_category: string | null;
   project_middle_category: string | null;
   project_small_category: string | null;

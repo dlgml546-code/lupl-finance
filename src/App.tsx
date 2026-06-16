@@ -55,11 +55,13 @@ type ModalKey =
   | "projectWizard"
   | "expenseForm"
   | "recurringForm"
+  | "expenseEdit"
   | "personForm"
   | "bonusForm"
   | "laborForm"
   | "permissionForm"
   | "cashForm"
+  | "cashHistory"
   | "categoryManage"
   | "cardManage"
   | "reviewDetail"
@@ -120,7 +122,7 @@ const pageKeyMap: Record<SectionKey, string> = {
 
 // 외주용역 기준 선택지
 const clientTypes: ClientType[] = ["일반학교", "특수학교", "공공기관", "기업", "비영리재단"];
-const projectGroups: ProjectGroup[] = ["교육", "문서작업", "홈페이지", "메타버스", "마케팅", "행사", "전시", "영상", "제품 제작", "디자인", "광고/홍보"];
+const projectGroups: ProjectGroup[] = ["교육", "문서작업", "홈페이지", "메타버스", "마케팅", "행사", "전시", "영상", "제품 제작", "디자인", "광고/홍보", "연구", "개발", "러플 마진 계산기", "기타"];
 
 const projectCategoryTree: Record<string, Record<string, string[]>> = {
   "교육": {
@@ -146,6 +148,10 @@ const projectCategoryTree: Record<string, Record<string, string[]>> = {
     "웹서비스": ["대시보드", "플랫폼", "자동화"],
     "AI 도구": ["OCR", "프롬프트", "API 연동"]
   },
+  "러플 마진 계산기": {
+    "견적·마진": ["강의 마진 계산", "프로젝트 마진 계산", "원가 시뮬레이션"],
+    "운영 도구": ["견적 저장", "PDF 출력", "대시보드 연동"]
+  },
   "디자인": {
     "콘텐츠": ["카드뉴스", "교재", "홍보물"],
     "상품": ["굿즈", "패키지", "시제품"]
@@ -163,6 +169,7 @@ const inflowRoutes = ["학교장터", "나라장터", "소개", "기존 고객",
 const expenseUsages: ExpenseUsage[] = ["여비·출장비", "업무 추진비", "내부 사업비", "외부 사업비(외주용역)", "복리후생비", "운영비", "차량비", "홍보비(광고비)", "자산취득비(비품 구입 등)"];
 const paymentMethods: PaymentMethod[] = ["계좌이체", "현금", "카드", "네이버페이-현금", "기타결제 - 비즈머니 충전", "기타결제 - 와우프레스 충전"];
 const transferStatuses: TransferStatus[] = ["결제 필요", "결제 완료", "이체 완료", "해당 없음"];
+const recurringUsageGroups: ExpenseUsage[] = ["운영비", "홍보비(광고비)", "복리후생비", "업무 추진비", "차량비", "내부 사업비", "외부 사업비(외주용역)", "자산취득비(비품 구입 등)", "여비·출장비"];
 
 // 노션 기준 사용 용도별 설명 (지출결의 팝업 하단 안내)
 const usageGuide: Record<ExpenseUsage, string> = {
@@ -623,14 +630,12 @@ export default function App() {
       const major = String(formData.get("project_major_category") || "");
       const middle = String(formData.get("project_middle_category") || "");
       const small = String(formData.get("project_small_category") || "");
-      const groups = [major, middle, small].filter(Boolean) as ProjectGroup[];
-      const legacyCategory = small || middle || major || "기타";
+      const groups = [major, middle, small].filter(Boolean);
       const monthlyPaymentMemo = String(formData.get("payment_due_cycle") || "") === "monthly" ? "입금 예정: 매월 반복" : "";
       const plainMemo = String(formData.get("memo") || "");
       const categoryMemo = groups.length ? `프로젝트 분류: ${groups.join(" > ")}` : "";
       const payload = {
         name: String(formData.get("name") || ""),
-        category: legacyCategory,
         client_type: (String(formData.get("client_type") || "") || null) as ClientType | null,
         project_major_category: major || null,
         project_middle_category: middle || null,
@@ -790,10 +795,12 @@ export default function App() {
   // 12번: 반복 지출 - 구독료/정기결제 전용
   async function createRecurring(formData: FormData) {
     try {
+      const usage = String(formData.get("usage") || "운영비") as ExpenseUsage;
+      const memo = String(formData.get("memo") || "");
       const payload = {
         used_at: String(formData.get("used_at") || today()),
         purpose: String(formData.get("purpose") || "정기 구독"),
-        usage: "운영비" as ExpenseUsage,
+        usage,
         payment_method: String(formData.get("payment_method") || "카드") as PaymentMethod,
         card_id: String(formData.get("card_id") || "") || null,
         amount: parseNumber(formData.get("amount")),
@@ -806,7 +813,7 @@ export default function App() {
         review_reason: "정기 구독/반복 지출 확인",
         is_recurring: true,
         recurring_cycle: String(formData.get("recurring_cycle") || "매월"),
-        memo: String(formData.get("memo") || "")
+        memo: [`정기지출 대분류: ${usage}`, memo].filter(Boolean).join("\n")
       };
 
       const { data, error } = await saveWithHealing<{ id: string; purpose: string; amount: number }>("expense_requests", payload);
@@ -913,6 +920,46 @@ export default function App() {
       }
     } catch (error) {
       showToast(error instanceof Error ? error.message : "직원 저장 실패", "err");
+      throw error;
+    }
+  }
+
+  async function updateExpense(formData: FormData) {
+    try {
+      const expenseId = String(formData.get("expense_id") || "");
+      if (!expenseId) throw new Error("수정할 지출결의를 찾지 못했습니다.");
+      const payload = {
+        used_at: String(formData.get("used_at") || today()),
+        purpose: String(formData.get("purpose") || "지출"),
+        usage: String(formData.get("usage") || "운영비") as ExpenseUsage,
+        payment_method: String(formData.get("payment_method") || "카드") as PaymentMethod,
+        card_id: String(formData.get("card_id") || "") || null,
+        amount: parseNumber(formData.get("amount")),
+        transfer_status: String(formData.get("transfer_status") || "해당 없음") as TransferStatus,
+        transfer_summary: String(formData.get("transfer_summary") || "") || null,
+        project_id: String(formData.get("project_id") || "") || null,
+        recurring_cycle: String(formData.get("recurring_cycle") || "") || null,
+        is_recurring: formData.get("is_recurring") === "on",
+        memo: String(formData.get("memo") || "")
+      };
+      const { error } = await supabase.from("expense_requests").update(payload).eq("id", expenseId);
+      if (error) throw toFriendlyDbError(error, "지출결의를 수정하지 못했습니다.");
+      await supabase
+        .from("review_items")
+        .update({
+          title: payload.is_recurring ? `[정기] ${payload.purpose}` : payload.purpose,
+          amount_or_impact: formatWon(payload.amount),
+          checklist: payload.is_recurring
+            ? `${payload.recurring_cycle || "반복"} 결제 항목입니다. 결제수단·금액·해지 필요 여부를 확인하세요.`
+            : "증빙 첨부 여부, 사용 용도 분류, 결제수단(법인/개인), 이체 여부를 확인하세요."
+        })
+        .eq("target_table", "expense_requests")
+        .eq("target_id", expenseId);
+      showToast("지출결의를 수정했습니다.");
+      setModal(null);
+      await loadAll();
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : "지출결의 수정 실패", "err");
       throw error;
     }
   }
@@ -1250,7 +1297,7 @@ export default function App() {
         .from("business_projects")
         .insert({
           name: `더미 프로젝트 ${stamp}`,
-          category: "기관 워크숍",
+          category: "교육",
           client_type: "기업" as ClientType,
           project_group: ["교육"] as ProjectGroup[],
           project_major_category: "교육",
@@ -1476,7 +1523,7 @@ export default function App() {
         </header>
 
         {section === "overview" && (
-          <Overview setSection={setSection} reviewCount={pendingReviews.length} cash={cash} projects={projectsComputed} expenses={expenses} people={people} onAddCash={() => setModal("cashForm")} />
+          <Overview setSection={setSection} reviewCount={pendingReviews.length} cash={cash} projects={projectsComputed} expenses={expenses} people={people} onAddCash={() => setModal("cashForm")} onOpenCashHistory={() => setModal("cashHistory")} />
         )}
         {section === "review" && (
           <ReviewInbox
@@ -1579,6 +1626,7 @@ export default function App() {
         currentPerson={currentPerson}
         people={people}
         departments={departments}
+        cash={cash}
         projects={projectsComputed}
         cards={cards}
         categories={categories}
@@ -1594,6 +1642,7 @@ export default function App() {
         onCreateLabor={createLabor}
         onCreatePermission={createPermission}
         onCreateCash={createCash}
+        onUpdateExpense={updateExpense}
         onCreateCategory={createCategory}
         onDeleteCategory={deleteCategory}
         onCreateCard={createCard}
@@ -1693,7 +1742,8 @@ function Overview({
   projects,
   expenses,
   people,
-  onAddCash
+  onAddCash,
+  onOpenCashHistory
 }: {
   setSection: (key: SectionKey) => void;
   reviewCount: number;
@@ -1702,6 +1752,7 @@ function Overview({
   expenses: ExpenseRequest[];
   people: Person[];
   onAddCash: () => void;
+  onOpenCashHistory: () => void;
 }) {
   const latest = cash[0];
   const hasCash = Boolean(latest);
@@ -1737,8 +1788,17 @@ function Overview({
         </div>
       )}
 
+      <div className="alert-top info compact-notice">
+        <div>
+          <strong>현재 현금만 입력하세요.</strong>
+          <span>매출·지출·미수금·지급예정은 프로젝트, 지출결의, 직원 연봉에서 자동 계산됩니다.</span>
+        </div>
+      </div>
+
       <div className="grid kpi">
-        <div className="card hero-card">
+        <div className={`card hero-card ${hasCash ? "clickable-card" : ""}`} role={hasCash ? "button" : undefined} tabIndex={hasCash ? 0 : undefined} onClick={hasCash ? onOpenCashHistory : undefined} onKeyDown={(event) => {
+          if (hasCash && (event.key === "Enter" || event.key === " ")) onOpenCashHistory();
+        }}>
           <div>
             <div className="hero-label">현재 현금</div>
             {hasCash ? (
@@ -1749,9 +1809,7 @@ function Overview({
                 <button className="btn blue small" onClick={onAddCash}>현금 현황 입력하기</button>
               </div>
             )}
-            {hasCash && (
-              <div className="hero-copy">현재 현금만 입력하면 매출·지출·미수금·지급예정은 프로젝트, 지출결의, 직원 연봉에서 자동 계산됩니다.</div>
-            )}
+            {hasCash && <div className="hero-copy">클릭하면 입력했던 월별 현금 데이터를 모두 확인합니다.</div>}
           </div>
           {hasCash && (
             <div className="hero-insights">
@@ -1885,11 +1943,22 @@ function Expense({
   onManageCard: () => void;
 }) {
   const pending = expenses.filter((item) => item.review_status === "검토 전");
+  const currentMonth = today().slice(0, 7);
+  const recurringTotal = expenses.filter((item) => item.is_recurring).reduce((sum, item) => sum + Number(item.amount || 0), 0);
+  const monthTotal = expenses.filter((item) => String(item.used_at || "").startsWith(currentMonth)).reduce((sum, item) => sum + Number(item.amount || 0), 0);
+  const totalExpense = expenses.reduce((sum, item) => sum + Number(item.amount || 0), 0);
+  const pendingTotal = pending.reduce((sum, item) => sum + Number(item.amount || 0), 0);
 
   return (
     <section className="section active">
       <div className="section-toolbar">
         <button className="btn small" onClick={onManageCard}>결제수단(카드) 관리</button>
+      </div>
+      <div className="grid four expense-summary">
+        <KpiCard compact label="정기 결제" value={formatWon(recurringTotal)} chip={`${expenses.filter((item) => item.is_recurring).length}건`} tone="blue" empty={expenses.length === 0} />
+        <KpiCard compact label="6월 지출" value={formatWon(monthTotal)} chip="이번 달" tone="red" empty={expenses.length === 0} />
+        <KpiCard compact label="총 지출" value={formatWon(totalExpense)} chip={`${expenses.length}건`} tone="orange" empty={expenses.length === 0} />
+        <KpiCard compact label="검토 대기" value={formatWon(pendingTotal)} chip={`${pending.length}건`} tone="green" empty={pending.length === 0} />
       </div>
       <div className="grid two">
         <div className="card">
@@ -2377,9 +2446,9 @@ function Org({
 
 function Modal({
   modal, setModal, selectedReview, selectedProject, selectedExpense, selectedPerson,
-  currentPerson, people, departments, projects, cards, categories, bonuses, labor, compReviews,
+  currentPerson, people, departments, cash, projects, cards, categories, bonuses, labor, compReviews,
   onReviewStatus, onCreateProject, onCreateExpense, onCreateRecurring, onCreatePerson,
-  onCreateBonus, onCreateLabor, onCreatePermission, onCreateCash, onCreateCategory,
+  onCreateBonus, onCreateLabor, onCreatePermission, onCreateCash, onUpdateExpense, onCreateCategory,
   onDeleteCategory, onCreateCard, onDeleteCard, onDeleteProject, onDeleteExpense, onDeleteReview, onEditPerson
 }: {
   modal: ModalKey;
@@ -2391,6 +2460,7 @@ function Modal({
   currentPerson: Person;
   people: Person[];
   departments: Department[];
+  cash: CashSnapshot[];
   projects: ProjectComputed[];
   cards: PaymentCard[];
   categories: ExpenseCategoryItem[];
@@ -2406,6 +2476,7 @@ function Modal({
   onCreateLabor: (formData: FormData) => Promise<void>;
   onCreatePermission: (formData: FormData) => Promise<void>;
   onCreateCash: (formData: FormData) => Promise<void>;
+  onUpdateExpense: (formData: FormData) => Promise<void>;
   onCreateCategory: (formData: FormData) => Promise<void>;
   onDeleteCategory: (id: string) => Promise<void>;
   onCreateCard: (formData: FormData) => Promise<void>;
@@ -2453,6 +2524,10 @@ function Modal({
 
         {modal === "recurringForm" && (
           <RecurringWizardForm cards={cards} onSubmit={onCreateRecurring} onClose={close} />
+        )}
+
+        {modal === "expenseEdit" && selectedExpense && (
+          <ExpenseEditForm expense={selectedExpense} cards={cards} categories={categories} projects={projects} onSubmit={onUpdateExpense} onClose={close} />
         )}
 
         {modal === "personForm" && (
@@ -2507,6 +2582,10 @@ function Modal({
           <CashForm onSubmit={onCreateCash} onClose={close} />
         )}
 
+        {modal === "cashHistory" && (
+          <CashHistory cash={cash} onClose={close} />
+        )}
+
         {modal === "categoryManage" && (
           <CategoryManage categories={categories} onCreate={onCreateCategory} onDelete={onDeleteCategory} onClose={close} />
         )}
@@ -2529,6 +2608,7 @@ function Modal({
             labor={labor}
             compReviews={compReviews}
             onClose={close}
+            onEditExpense={() => setModal("expenseEdit")}
             onReviewStatus={onReviewStatus}
             onDeleteProject={onDeleteProject}
             onDeleteExpense={onDeleteExpense}
@@ -3126,6 +3206,56 @@ function ExpenseForm({
   );
 }
 
+function ExpenseEditForm({
+  expense, cards, categories, projects, onSubmit, onClose
+}: {
+  expense: ExpenseRequest;
+  cards: PaymentCard[];
+  categories: ExpenseCategoryItem[];
+  projects: ProjectComputed[];
+  onSubmit: (formData: FormData) => Promise<void>;
+  onClose: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [method, setMethod] = useState<PaymentMethod>((expense.payment_method || "카드") as PaymentMethod);
+  const [isRecurring, setIsRecurring] = useState(Boolean(expense.is_recurring));
+  return (
+    <>
+      <ModalHead title="지출결의 수정" desc="관리자는 정기구독 금액을 포함해 지출결의 원본 내용을 수정할 수 있습니다." onClose={onClose} />
+      <form
+        className="modal-form"
+        onSubmit={async (event) => {
+          event.preventDefault();
+          setBusy(true);
+          try {
+            await onSubmit(new FormData(event.currentTarget));
+          } finally {
+            setBusy(false);
+          }
+        }}
+      >
+        <input type="hidden" name="expense_id" value={expense.id} />
+        <label>사용일<input type="date" name="used_at" defaultValue={expense.used_at || today()} /></label>
+        <label>목적/항목명<input name="purpose" defaultValue={expense.purpose} required /></label>
+        <label>사용 용도<select name="usage" defaultValue={expense.usage}>{expenseUsages.map((c) => <option key={c}>{c}</option>)}{categories.filter((c) => !expenseUsages.includes(c.name as ExpenseUsage)).map((c) => <option key={c.id}>{c.name}</option>)}</select></label>
+        <label>금액<input className="money-input" name="amount" defaultValue={formatMoneyInputValue(String(expense.amount || ""))} onInput={handleMoneyInput} inputMode="numeric" required /></label>
+        <label>결제방식<select name="payment_method" value={method} onChange={(event) => setMethod(event.target.value as PaymentMethod)}>{paymentMethods.map((m) => <option key={m}>{m}</option>)}</select></label>
+        {method === "카드" && <label>카드<select name="card_id" defaultValue={expense.card_id || ""}><option value="">카드 선택</option>{cards.map((c) => <option key={c.id} value={c.id}>{c.label}</option>)}</select></label>}
+        <label>이체/지급 상태<select name="transfer_status" defaultValue={expense.transfer_status || "해당 없음"}>{transferStatuses.map((status) => <option key={status}>{status}</option>)}</select></label>
+        <label>연결 프로젝트<select name="project_id" defaultValue={expense.project_id || ""}><option value="">선택 안 함</option>{projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</select></label>
+        <label className="check-label"><input type="checkbox" name="is_recurring" checked={isRecurring} onChange={(event) => setIsRecurring(event.target.checked)} /><span>정기 결제 항목</span></label>
+        {isRecurring && <label>반복 주기<select name="recurring_cycle" defaultValue={expense.recurring_cycle || "매월"}><option>매월</option><option>매분기</option><option>매년</option></select></label>}
+        <label className="wide">이체 내용 요약<textarea name="transfer_summary" defaultValue={expense.transfer_summary || ""} /></label>
+        <label className="wide">메모<textarea name="memo" defaultValue={expense.memo || ""} /></label>
+        <div className="modal-actions">
+          <button className="btn" type="button" onClick={onClose}>닫기</button>
+          <button className="btn blue" disabled={busy}>{busy ? "저장 중" : "수정 저장"}</button>
+        </div>
+      </form>
+    </>
+  );
+}
+
 // 반복 지출(구독) 등록 - 질문형 + 임시저장
 function RecurringWizardForm({
   cards, onSubmit, onClose
@@ -3139,6 +3269,7 @@ function RecurringWizardForm({
   const [message, setMessage] = useState("");
   const [answers, setAnswers] = useState<Record<string, string>>({
     recurring_cycle: "매월",
+    usage: "운영비",
     payment_method: "카드",
     used_at: today(),
     amount: "0"
@@ -3162,8 +3293,15 @@ function RecurringWizardForm({
   }
 
   const method = (answers.payment_method as PaymentMethod) || "카드";
+  const usage = (answers.usage as ExpenseUsage) || "운영비";
 
   const steps: WizardStep[] = [
+    {
+      key: "usage",
+      title: "정기 지출 대분류를 먼저 골라 주세요.",
+      hint: "SaaS·도메인·서버·사무툴은 운영비, 광고 플랫폼은 홍보비, 식대·복지는 복리후생비로 묶으면 나중에 관리하기 쉽습니다.",
+      body: <select value={usage} onChange={(e) => setField("usage", e.target.value)}>{recurringUsageGroups.map((item) => <option key={item}>{item}</option>)}</select>
+    },
     {
       key: "purpose",
       title: "어떤 정기 지출인가요? (서비스·항목명)",
@@ -3233,7 +3371,7 @@ function RecurringWizardForm({
       message={message}
       submitLabel="반복 지출 등록"
       summaryPrimary={answers.purpose || "항목 미입력"}
-      summarySecondary={`${answers.recurring_cycle || "매월"} · ${answers.amount || "0"}원`}
+      summarySecondary={`${answers.usage || "운영비"} · ${answers.recurring_cycle || "매월"} · ${answers.amount || "0"}원`}
       onSubmit={submit}
       onClose={onClose}
     />
@@ -3476,6 +3614,7 @@ function SalaryFields({ person }: { person: Person | null }) {
       <label>전년도 연봉
         <input className="money-input" name="previous_annual_salary" defaultValue={formatMoneyInputValue(String(person?.previous_annual_salary || ""))} onInput={handleMoneyInput} />
       </label>
+      <div className="form-help wide">운영설정: 근태관리에서 쓰는 주 근무일, 일 근무시간, 월 소정근로시간을 인건비 계산에도 그대로 사용합니다.</div>
       <label>주 근무일
         <input name="weekly_work_days" type="number" min="1" max="7" step="0.5" value={days} onChange={(e) => setDays(Number(e.target.value))} />
       </label>
@@ -3569,7 +3708,7 @@ function FormModal({
 
 function DetailModal({
   modal, selectedReview, selectedProject, selectedExpense, selectedPerson,
-  people, cards, projects, bonuses, labor, compReviews, onClose, onReviewStatus
+  people, cards, projects, bonuses, labor, compReviews, onClose, onEditExpense, onReviewStatus
   , onDeleteProject, onDeleteExpense, onDeleteReview, onEditPerson
 }: {
   modal: ModalKey;
@@ -3584,6 +3723,7 @@ function DetailModal({
   labor: ProjectLaborAllocation[];
   compReviews: CompensationReview[];
   onClose: () => void;
+  onEditExpense: () => void;
   onReviewStatus: (review: ReviewItem, status: ReviewStatus) => Promise<void>;
   onDeleteProject: (project: BusinessProject) => Promise<void>;
   onDeleteExpense: (expense: ExpenseRequest) => Promise<void>;
@@ -3700,10 +3840,10 @@ function DetailModal({
         {selectedExpense.receipt_file_url && (
           <a className="btn small" href={selectedExpense.receipt_file_url} target="_blank" rel="noreferrer">영수증 파일 열기</a>
         )}
-        <div className="modal-actions danger-actions">
+        <ReviewActions selectedReview={selectedReview} onClose={onClose} onReviewStatus={onReviewStatus} onDeleteReview={onDeleteReview}>
+          <button className="btn" type="button" onClick={onEditExpense}>지출결의 수정</button>
           <button className="btn danger" type="button" onClick={() => onDeleteExpense(selectedExpense)}>지출결의 삭제</button>
-        </div>
-        <ReviewActions selectedReview={selectedReview} onClose={onClose} onReviewStatus={onReviewStatus} onDeleteReview={onDeleteReview} />
+        </ReviewActions>
       </>
     );
   }
@@ -3730,12 +3870,13 @@ function DetailModal({
 }
 
 function ReviewActions({
-  selectedReview, onClose, onReviewStatus, onDeleteReview
+  selectedReview, onClose, onReviewStatus, onDeleteReview, children
 }: {
   selectedReview: ReviewItem | null;
   onClose: () => void;
   onReviewStatus: (review: ReviewItem, status: ReviewStatus) => Promise<void>;
   onDeleteReview?: (review: ReviewItem) => Promise<void>;
+  children?: React.ReactNode;
 }) {
   return (
     <div className="modal-actions">
@@ -3745,9 +3886,13 @@ function ReviewActions({
           <button className="btn" onClick={() => onReviewStatus(selectedReview, "보류")}>보류</button>
           <button className="btn blue" onClick={() => onReviewStatus(selectedReview, "승인")}>승인</button>
           {onDeleteReview && <button className="btn danger" onClick={() => onDeleteReview(selectedReview)}>검토 항목 삭제</button>}
+          {children}
         </>
       ) : (
-        <button className="btn blue" onClick={onClose}>확인</button>
+        <>
+          {children}
+          <button className="btn blue" onClick={onClose}>확인</button>
+        </>
       )}
     </div>
   );
@@ -3861,9 +4006,57 @@ function EmptyState({ text }: { text: string }) {
   );
 }
 
+function CashHistory({ cash, onClose }: { cash: CashSnapshot[]; onClose: () => void }) {
+  const items = [...cash].sort((a, b) => String(b.snapshot_month).localeCompare(String(a.snapshot_month)));
+  return (
+    <>
+      <ModalHead title="입력한 현금 현황" desc="월별로 저장한 현재 현금과 자동 계산된 매출·지출·미수금·지급예정을 확인합니다." onClose={onClose} />
+      {items.length === 0 ? (
+        <EmptyState text="아직 입력된 현금 현황이 없습니다." />
+      ) : (
+        <div className="table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th style={{ width: 100 }}>기준 월</th>
+                <th className="num" style={{ width: 140 }}>현재 현금</th>
+                <th className="num" style={{ width: 130 }}>매출</th>
+                <th className="num" style={{ width: 130 }}>지출</th>
+                <th className="num" style={{ width: 130 }}>순현금흐름</th>
+                <th className="num" style={{ width: 120 }}>미수금</th>
+                <th className="num" style={{ width: 120 }}>지급예정</th>
+                <th className="num" style={{ width: 90 }}>Runway</th>
+              </tr>
+            </thead>
+            <tbody>
+              {items.map((item) => (
+                <tr key={item.id}>
+                  <td>{String(item.snapshot_month).slice(0, 7)}</td>
+                  <td className="num strong-num">{formatWon(item.current_cash)}</td>
+                  <td className="num">{formatWon(item.revenue)}</td>
+                  <td className="num">{formatWon(item.expense)}</td>
+                  <td className="num">{formatWon(Number(item.revenue || 0) - Number(item.expense || 0))}</td>
+                  <td className="num">{formatWon(item.receivable_amount)}</td>
+                  <td className="num">{formatWon(item.payable_amount)}</td>
+                  <td className="num">{item.runway_months ? `${item.runway_months}개월` : "-"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      <div className="modal-actions">
+        <button className="btn blue" type="button" onClick={onClose}>확인</button>
+      </div>
+    </>
+  );
+}
+
 // 4번: 토스 블루 계열 직관적 색상 (CSS 변수로 정의됨)
 function CashFlowChart({ cash, onAddCash }: { cash: CashSnapshot[]; onAddCash: () => void }) {
-  const items = cash.slice(0, 6).reverse();
+  const items = cash
+    .filter((item) => String(item.snapshot_month || "") >= "2026-06-01")
+    .sort((a, b) => String(a.snapshot_month).localeCompare(String(b.snapshot_month)));
   if (items.length === 0) {
     return (
       <div className="chart-empty">
@@ -3884,7 +4077,7 @@ function CashFlowChart({ cash, onAddCash }: { cash: CashSnapshot[]; onAddCash: (
             <div className="mini-track"><div className="mini-fill expense" style={{ width: `${(Number(item.expense || 0) / maxValue) * 100}%` }} /></div>
             <div className="mini-track"><div className="mini-fill net" style={{ width: `${(Math.abs(Number(item.net_burn || 0)) / maxValue) * 100}%` }} /></div>
           </div>
-          <div className="cash-num">매출 {formatWonShort(item.revenue)} / 비용 {formatWonShort(item.expense)}</div>
+          <div className="cash-num">매출 {formatWonShort(item.revenue)} / 비용 {formatWonShort(item.expense)} / 현금 {formatWonShort(item.current_cash)}</div>
         </div>
       ))}
     </div>

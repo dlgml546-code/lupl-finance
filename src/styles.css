@@ -369,6 +369,17 @@ button { -webkit-tap-highlight-color: transparent; }
   margin-bottom: 22px;
 }
 
+.alert-top.info {
+  background: rgba(238, 245, 255, 0.92);
+  border-color: rgba(91, 141, 239, 0.20);
+  color: #315f9f;
+}
+
+.compact-notice {
+  padding: 14px 18px;
+  margin-bottom: 16px;
+}
+
 .alert-top strong {
   display: block;
   font-size: 15px;
@@ -386,7 +397,7 @@ button { -webkit-tap-highlight-color: transparent; }
 .grid { display: grid; gap: 22px; }
 
 .grid.kpi {
-  grid-template-columns: minmax(460px, 1.48fr) repeat(3, minmax(0, 1fr));
+  grid-template-columns: minmax(360px, 1.22fr) repeat(3, minmax(0, 1fr));
   margin-bottom: 22px;
 }
 
@@ -408,7 +419,7 @@ button { -webkit-tap-highlight-color: transparent; }
 .card.solid { background: rgba(255, 255, 255, 0.94); }
 
 .hero-card {
-  min-height: 242px;
+  min-height: 198px;
   display: grid;
   align-content: space-between;
   background:
@@ -416,6 +427,16 @@ button { -webkit-tap-highlight-color: transparent; }
     radial-gradient(circle at 96% 86%, rgba(95, 183, 178, 0.34), transparent 30%),
     linear-gradient(135deg, #ebf4ff 0%, #f2f8ff 46%, #f4f0ff 100%);
   border: 1px solid rgba(91, 141, 239, 0.14);
+}
+
+.clickable-card {
+  cursor: pointer;
+  transition: transform 150ms ease, box-shadow 150ms ease;
+}
+
+.clickable-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 22px 62px rgba(16, 24, 40, 0.13);
 }
 
 .hero-label {
@@ -443,13 +464,14 @@ button { -webkit-tap-highlight-color: transparent; }
   font-size: 14px;
   line-height: 1.66;
   word-break: keep-all;
+  overflow-wrap: break-word;
 }
 
 .hero-insights {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 10px;
-  margin-top: 22px;
+  margin-top: 16px;
 }
 
 .hero-mini {
@@ -479,7 +501,7 @@ button { -webkit-tap-highlight-color: transparent; }
 }
 
 .kpi-card {
-  min-height: 242px;
+  min-height: 198px;
   display: grid;
   align-content: space-between;
 }
@@ -496,7 +518,7 @@ button { -webkit-tap-highlight-color: transparent; }
   line-height: 1.35;
   margin-bottom: 10px;
   word-break: keep-all;
-  overflow-wrap: normal;
+  overflow-wrap: break-word;
 }
 
 .kpi-value {
@@ -507,6 +529,7 @@ button { -webkit-tap-highlight-color: transparent; }
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  word-break: keep-all;
 }
 
 .resource-kpi .kpi-value { font-size: 24px; }
@@ -653,7 +676,7 @@ button { -webkit-tap-highlight-color: transparent; }
 
 .cash-month {
   display: grid;
-  grid-template-columns: 70px 1fr 140px;
+  grid-template-columns: 56px minmax(160px, 1fr) minmax(190px, auto);
   gap: 14px;
   align-items: center;
   font-size: 13px;
@@ -680,7 +703,11 @@ button { -webkit-tap-highlight-color: transparent; }
   font-size: 12px;
   color: var(--muted);
   line-height: 1.5;
-  white-space: nowrap;
+  word-break: keep-all;
+}
+
+.expense-summary {
+  margin-bottom: 22px;
 }
 
 .queue { display: grid; gap: 12px; }
