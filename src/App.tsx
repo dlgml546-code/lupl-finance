@@ -50,6 +50,7 @@ type ModalKey =
   | "expenseReview"
   | "taxReview"
   | "projectDetail"
+  | "projectEdit"
   | "employeeDetail"
   | "projectForm"
   | "projectWizard"
@@ -840,6 +841,90 @@ export default function App() {
       console.error("project create failed", error);
       showToast(error instanceof Error ? error.message : "프로젝트 등록 실패", "err");
       throw error;
+    }
+  }
+
+  async function updateProject(formData: FormData) {
+    const projectId = String(formData.get("project_id") || "");
+    if (!projectId) throw new Error("수정할 프로젝트를 찾지 못했습니다.");
+    try {
+      const major = String(formData.get("project_major_category") || "");
+      const middle = String(formData.get("project_middle_category") || "");
+      const small = String(formData.get("project_small_category") || "");
+      const groups = [major, middle, small].filter(Boolean);
+      const legacyCategory = toLegacyBusinessCategory(major);
+      const monthlyPaymentMemo = String(formData.get("payment_due_cycle") || "") === "monthly" ? "입금 예정: 매월 반복" : "";
+      const plainMemo = String(formData.get("memo") || "");
+      const categoryMemo = groups.length ? `프로젝트 분류: ${groups.join(" > ")}` : "";
+      const payload = {
+        name: String(formData.get("name") || ""),
+        category: legacyCategory,
+        client_type: (String(formData.get("client_type") || "") || null) as ClientType | null,
+        project_major_category: major || null,
+        project_middle_category: middle || null,
+        project_small_category: small || null,
+        project_group: groups.length ? groups : null,
+        client_name: String(formData.get("client_name") || "") || null,
+        status: String(formData.get("status") || "접수") as ProjectStatus,
+        confirmed_amount: parseNumber(formData.get("confirmed_amount")),
+        received_amount: parseNumber(formData.get("received_amount")),
+        receipt_status: (String(formData.get("receipt_status") || "미청구") || null) as ReceiptStatus | null,
+        owner_label: String(formData.get("owner_label") || "") || null,
+        operator_label: String(formData.get("operator_label") || "") || null,
+        contact: String(formData.get("contact") || "") || null,
+        inflow_route: String(formData.get("inflow_route") || "") || null,
+        payment_due_date: String(formData.get("payment_due_date") || "") || null,
+        due_date: String(formData.get("due_date") || "") || null,
+        tax_invoice_date: String(formData.get("tax_invoice_date") || "") || null,
+        repeat_client: formData.get("repeat_client") === "on",
+        memo: [categoryMemo, monthlyPaymentMemo, plainMemo].filter(Boolean).join("\n")
+      };
+
+      let error: DbError = null;
+      const existingLegacyCategories = (projects as Array<BusinessProject & { category?: string | null }>)
+        .map((project) => String(project.category || "").trim())
+        .filter(Boolean);
+      const categoryCandidates = Array.from(new Set([legacyCategory, ...existingLegacyCategories, ...legacyBusinessCategories]));
+      for (const candidate of categoryCandidates) {
+        const result = await updateWithHealing(
+          "business_projects",
+          { ...payload, category: candidate },
+          "id",
+          projectId
+        );
+        error = result.error;
+        if (!error) break;
+        if (!isInvalidBusinessCategoryError(error)) break;
+      }
+      if (error && isInvalidBusinessCategoryError(error)) {
+        const result = await updateWithHealing("business_projects", { ...payload, category: undefined }, "id", projectId);
+        error = result.error;
+      }
+      if (error && isProjectCategoryRequiredError(error)) {
+        throw new Error("배포 DB의 business_projects.category enum 값이 현재 앱과 맞지 않습니다. Supabase schema.sql을 한 번 적용해야 합니다.");
+      }
+      if (error) throw toFriendlyDbError(error, "프로젝트 수정에 실패했습니다.");
+      showToast("프로젝트를 수정했습니다.");
+      setModal(null);
+      await loadAll();
+    } catch (error) {
+      console.error("project update failed", error);
+      showToast(error instanceof Error ? error.message : "프로젝트 수정 실패", "err");
+      throw error;
+    }
+  }
+
+  async function completeProject(project: BusinessProject) {
+    try {
+      const { error } = await updateWithHealing("business_projects", { status: "납품 완료" }, "id", project.id);
+      if (error) throw toFriendlyDbError(error, "프로젝트 완료 처리에 실패했습니다.");
+      showToast("프로젝트를 납품 완료 처리했습니다.");
+      setSelectedProject(null);
+      setModal(null);
+      await loadAll();
+    } catch (error) {
+      console.error(error);
+      showToast(error instanceof Error ? error.message : "프로젝트 완료 처리 실패", "err");
     }
   }
 
@@ -1794,6 +1879,8 @@ export default function App() {
         compReviews={compReviews}
         onReviewStatus={updateReviewStatus}
         onCreateProject={createProject}
+        onUpdateProject={updateProject}
+        onCompleteProject={completeProject}
         onCreateExpense={createExpense}
         onCreateRecurring={createRecurring}
         onCreatePerson={createPerson}
@@ -1932,6 +2019,8 @@ function Overview({
   const runway = currentCash != null && netBurn > 0 ? Math.round((Number(currentCash) / netBurn) * 10) / 10 : latest?.runway_months ?? null;
   const receivable = projects.reduce((s, p) => s + p._receivable, 0);
   const payable = expenses.filter((e) => e.review_status !== "승인").reduce((s, e) => s + Number(e.amount || 0), 0);
+  const expectedMonthEndCash = currentCash != null ? Number(currentCash) + Number(receivable || 0) - Number(payable || 0) : 0;
+  const flowMax = Math.max(Math.abs(receivable), Math.abs(payable), Math.abs(monthlyExpense), Math.abs(expectedMonthEndCash), 1);
 
   return (
     <section className="section active">
@@ -1949,14 +2038,7 @@ function Overview({
         </div>
       )}
 
-      <div className="alert-top info compact-notice">
-        <div>
-          <strong>현재 현금만 입력하세요.</strong>
-          <span>매출·지출·미수금·지급예정은 프로젝트, 지출결의, 직원 연봉에서 자동 계산됩니다.</span>
-        </div>
-      </div>
-
-      <div className="grid kpi">
+      <div className="overview-kpi-layout">
         <div className={`card hero-card ${hasCash ? "clickable-card" : ""}`} role={hasCash ? "button" : undefined} tabIndex={hasCash ? 0 : undefined} onClick={hasCash ? onOpenCashHistory : undefined} onKeyDown={(event) => {
           if (hasCash && (event.key === "Enter" || event.key === " ")) onOpenCashHistory();
         }}>
@@ -1980,20 +2062,23 @@ function Overview({
               </div>
             )}
           </div>
-          {hasCash && (
-            <div className="hero-insights">
-              <InfoMini label="이번 달 입금예정" value={receivable != null ? formatWon(receivable) : "-"} />
-              <InfoMini label="이번 달 지급예정" value={payable != null ? formatWon(payable) : "-"} />
-              <InfoMini label="직원 월급 포함 지출" value={monthlyExpense != null ? formatWon(monthlyExpense) : "-"} />
-              <InfoMini label="예상 월말 현금" value={currentCash != null ? formatWon(Number(currentCash) + Number(receivable || 0) - Number(payable || 0)) : "-"} />
-            </div>
-          )}
         </div>
 
-        <KpiCard label="이번 달 매출" value={monthlyRevenue != null ? formatWon(monthlyRevenue) : "미입력"} chip="자동 계산" tone="green" empty={!hasCash} />
-        <KpiCard label="직원 월급 포함 지출" value={monthlyExpense != null ? formatWon(monthlyExpense) : "미입력"} chip="자동 계산" tone="red" empty={!hasCash} />
-        <KpiCard label="현금소진액 / Runway" value={formatWon(netBurn)} chip={runway != null ? `${runway}개월` : "현재 현금 필요"} tone="orange" empty={!hasCash} />
+        <div className="overview-auto-kpis">
+          <KpiCard compact label="이번 달 매출" value={monthlyRevenue != null ? formatWon(monthlyRevenue) : "미입력"} chip="자동 계산" tone="green" empty={!hasCash} />
+          <KpiCard compact label="직원 월급 포함 지출" value={monthlyExpense != null ? formatWon(monthlyExpense) : "미입력"} chip="자동 계산" tone="red" empty={!hasCash} />
+          <KpiCard compact label="현금소진액 / Runway" value={formatWon(netBurn)} chip={runway != null ? `${runway}개월` : "현재 현금 필요"} tone="orange" empty={!hasCash} />
+        </div>
       </div>
+
+      {hasCash && (
+        <div className="overview-flow-strip">
+          <CashSignal label="이번 달 입금예정" value={formatWon(receivable)} tone="green" max={flowMax} amount={receivable} onClick={() => setSection("revenue")} />
+          <CashSignal label="이번 달 지급예정" value={formatWon(payable)} tone="orange" max={flowMax} amount={payable} onClick={() => setSection("expense")} />
+          <CashSignal label="직원 월급 포함 지출" value={formatWon(monthlyExpense)} tone="red" max={flowMax} amount={monthlyExpense} onClick={() => setSection("compensation")} />
+          <CashSignal label="예상 월말 현금" value={formatWon(expectedMonthEndCash)} tone="blue" max={flowMax} amount={expectedMonthEndCash} onClick={onOpenCashHistory} />
+        </div>
+      )}
 
       <div className="grid two">
         <div className="card">
@@ -2713,7 +2798,7 @@ function Org({
 function Modal({
   modal, setModal, selectedReview, selectedProject, selectedExpense, selectedPerson,
   currentPerson, people, departments, cash, projects, cards, categories, bonuses, labor, compReviews,
-  onReviewStatus, onCreateProject, onCreateExpense, onCreateRecurring, onCreatePerson,
+  onReviewStatus, onCreateProject, onUpdateProject, onCompleteProject, onCreateExpense, onCreateRecurring, onCreatePerson,
   onCreateBonus, onCreateLabor, onCreatePermission, onCreateCash, onUpdateExpense, onCreateCategory,
   onDeleteCategory, onCreateCard, onDeleteCard, onDeleteProject, onDeleteExpense, onDeleteReview, onEditPerson
 }: {
@@ -2735,6 +2820,8 @@ function Modal({
   compReviews: CompensationReview[];
   onReviewStatus: (review: ReviewItem, status: ReviewStatus) => Promise<void>;
   onCreateProject: (formData: FormData) => Promise<void>;
+  onUpdateProject: (formData: FormData) => Promise<void>;
+  onCompleteProject: (project: BusinessProject) => Promise<void>;
   onCreateExpense: (formData: FormData) => Promise<void>;
   onCreateRecurring: (formData: FormData) => Promise<void>;
   onCreatePerson: (formData: FormData) => Promise<void>;
@@ -2782,6 +2869,10 @@ function Modal({
             <ProjectCategoryFields />
             <label className="wide">비고/메모<textarea name="memo" /></label>
           </FormModal>
+        )}
+
+        {modal === "projectEdit" && selectedProject && (
+          <ProjectEditForm project={selectedProject} people={people} onSubmit={onUpdateProject} onClose={close} />
         )}
 
         {modal === "expenseForm" && (
@@ -2877,8 +2968,10 @@ function Modal({
             onEditExpense={() => setModal("expenseEdit")}
             onReviewStatus={onReviewStatus}
             onDeleteProject={onDeleteProject}
+            onCompleteProject={onCompleteProject}
             onDeleteExpense={onDeleteExpense}
             onDeleteReview={onDeleteReview}
+            onEditProject={() => setModal("projectEdit")}
             onEditPerson={onEditPerson}
           />
         )}
@@ -2954,6 +3047,12 @@ function CashForm({
   return (
     <>
       <ModalHead title="현금 현황 입력" desc="은행별·통장별 잔액을 적으면 합계가 현재 현금으로 저장됩니다. 자동이체는 지출결의로 같이 등록됩니다." onClose={onClose} />
+      <div className="alert-top info compact-notice modal-notice">
+        <div>
+          <strong>현재 현금만 입력하세요.</strong>
+          <span>매출·지출·미수금·지급예정은 프로젝트, 지출결의, 직원 연봉에서 자동 계산됩니다.</span>
+        </div>
+      </div>
       <form
         className="modal-form"
         onSubmit={async (event) => {
@@ -3705,6 +3804,69 @@ function BonusForm({
   );
 }
 
+function ProjectEditForm({
+  project, people, onSubmit, onClose
+}: {
+  project: ProjectComputed;
+  people: Person[];
+  onSubmit: (formData: FormData) => Promise<void>;
+  onClose: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const ownerOptions = people.map((person) => person.name);
+  const cleanMemo = String(project.memo || "")
+    .split("\n")
+    .filter((line) => !line.startsWith("프로젝트 분류:") && !line.startsWith("입금 예정:"))
+    .join("\n");
+  const categoryDefaults = {
+    major: project.project_major_category || project.project_group?.[0] || "교육",
+    middle: project.project_middle_category || project.project_group?.[1] || "",
+    small: project.project_small_category || project.project_group?.[2] || ""
+  };
+
+  return (
+    <>
+      <ModalHead title="프로젝트 수정" desc="등록된 프로젝트의 상태, 금액, 담당자, 분류, 입금 일정을 수정합니다." onClose={onClose} />
+      <form
+        className="modal-form"
+        onSubmit={async (event) => {
+          event.preventDefault();
+          setBusy(true);
+          try {
+            await onSubmit(new FormData(event.currentTarget));
+          } finally {
+            setBusy(false);
+          }
+        }}
+      >
+        <input type="hidden" name="project_id" value={project.id} />
+        <label>프로젝트 내용<input name="name" required defaultValue={project.name} /></label>
+        <label>거래처/기관명<input name="client_name" defaultValue={project.client_name || ""} /></label>
+        <label>거래처 구분<select name="client_type" defaultValue={project.client_type || ""}><option value="">선택</option>{clientTypes.map((c) => <option key={c}>{c}</option>)}</select></label>
+        <label>상태<select name="status" defaultValue={project.status}>{projectStatuses.map((s) => <option key={s}>{s}</option>)}</select></label>
+        <label>책임자<select name="owner_label" defaultValue={project.owner_label || ""}><option value="">선택</option>{project.owner_label && !ownerOptions.includes(project.owner_label) && <option>{project.owner_label}</option>}{people.map((p) => <option key={p.id} value={p.name}>{p.name}</option>)}</select></label>
+        <label>실무 담당자<select name="operator_label" defaultValue={project.operator_label || ""}><option value="">선택</option>{project.operator_label && !ownerOptions.includes(project.operator_label) && <option>{project.operator_label}</option>}{people.map((p) => <option key={p.id} value={p.name}>{p.name}</option>)}</select></label>
+        <label>유입 경로<select name="inflow_route" defaultValue={project.inflow_route || ""}><option value="">선택</option>{inflowRoutes.map((r) => <option key={r}>{r}</option>)}</select></label>
+        <label>확정 금액(견적·계약 총액)<input className="money-input" name="confirmed_amount" defaultValue={formatMoneyInputValue(String(project.confirmed_amount || ""))} onInput={handleMoneyInput} /></label>
+        <label>수령 금액(실입금)<input className="money-input" name="received_amount" defaultValue={formatMoneyInputValue(String(project.received_amount || ""))} onInput={handleMoneyInput} /></label>
+        <label>대금 수령 상태<select name="receipt_status" defaultValue={project.receipt_status || "미청구"}>{receiptStatuses.map((r) => <option key={r}>{r}</option>)}</select></label>
+        <label>실무 담당자 연락처<input name="contact" defaultValue={project.contact || ""} /></label>
+        <label>입금 예정일<input type="date" name="payment_due_date" defaultValue={project.payment_due_date || ""} /></label>
+        <label>마감 날짜<input type="date" name="due_date" defaultValue={project.due_date || ""} /></label>
+        <label>세금계산서 발행일<input type="date" name="tax_invoice_date" defaultValue={project.tax_invoice_date || ""} /></label>
+        <label>입금 반복<select name="payment_due_cycle" defaultValue={project.memo?.includes("매월 반복") ? "monthly" : "once"}><option value="once">일회성</option><option value="monthly">매월 반복</option></select></label>
+        <label className="check-label"><input type="checkbox" name="repeat_client" defaultChecked={Boolean(project.repeat_client)} /><span>반복 가능 고객</span></label>
+        <ProjectCategoryFields defaults={categoryDefaults} />
+        <label className="wide">비고/메모<textarea name="memo" defaultValue={cleanMemo} /></label>
+        <div className="modal-actions">
+          <button className="btn" type="button" onClick={onClose}>닫기</button>
+          <button className="btn blue" disabled={busy}>{busy ? "저장 중" : "수정 저장"}</button>
+        </div>
+      </form>
+    </>
+  );
+}
+
 // 19번: 카테고리 관리
 function CategoryManage({
   categories, onCreate, onDelete, onClose
@@ -3792,23 +3954,30 @@ function CardManage({
 }
 
 
-function ProjectCategoryFields() {
+function ProjectCategoryFields({ defaults }: { defaults?: { major?: string | null; middle?: string | null; small?: string | null } }) {
   const majors = Object.keys(projectCategoryTree);
-  const [major, setMajor] = useState(majors[0] || "기타");
+  const initialMajor = defaults?.major && projectCategoryTree[defaults.major] ? defaults.major : majors[0] || "기타";
+  const initialMiddles = Object.keys(projectCategoryTree[initialMajor] || {});
+  const initialMiddle = defaults?.middle && projectCategoryTree[initialMajor]?.[defaults.middle] ? defaults.middle : initialMiddles[0] || "기타";
+  const initialSmalls = projectCategoryTree[initialMajor]?.[initialMiddle] || ["기타"];
+  const initialSmall = defaults?.small && initialSmalls.includes(defaults.small) ? defaults.small : initialSmalls[0] || "기타";
+  const [major, setMajorValue] = useState(initialMajor);
+  const [middle, setMiddleValue] = useState(initialMiddle);
+  const [small, setSmall] = useState(initialSmall);
   const middles = Object.keys(projectCategoryTree[major] || {});
-  const [middle, setMiddle] = useState(middles[0] || "기타");
   const smalls = projectCategoryTree[major]?.[middle] || ["기타"];
-  const [small, setSmall] = useState(smalls[0] || "기타");
 
-  useEffect(() => {
-    const nextMiddle = Object.keys(projectCategoryTree[major] || {})[0] || "기타";
-    setMiddle(nextMiddle);
-    setSmall((projectCategoryTree[major]?.[nextMiddle] || ["기타"])[0] || "기타");
-  }, [major]);
+  function setMajor(value: string) {
+    setMajorValue(value);
+    const nextMiddle = Object.keys(projectCategoryTree[value] || {})[0] || "기타";
+    setMiddleValue(nextMiddle);
+    setSmall((projectCategoryTree[value]?.[nextMiddle] || ["기타"])[0] || "기타");
+  }
 
-  useEffect(() => {
-    setSmall((projectCategoryTree[major]?.[middle] || ["기타"])[0] || "기타");
-  }, [middle, major]);
+  function setMiddle(value: string) {
+    setMiddleValue(value);
+    setSmall((projectCategoryTree[major]?.[value] || ["기타"])[0] || "기타");
+  }
 
   return (
     <>
@@ -3976,7 +4145,7 @@ function FormModal({
 function DetailModal({
   modal, selectedReview, selectedProject, selectedExpense, selectedPerson,
   people, cards, projects, bonuses, labor, compReviews, onClose, onEditExpense, onReviewStatus
-  , onDeleteProject, onDeleteExpense, onDeleteReview, onEditPerson
+  , onDeleteProject, onCompleteProject, onDeleteExpense, onDeleteReview, onEditProject, onEditPerson
 }: {
   modal: ModalKey;
   selectedReview: ReviewItem | null;
@@ -3993,8 +4162,10 @@ function DetailModal({
   onEditExpense: () => void;
   onReviewStatus: (review: ReviewItem, status: ReviewStatus) => Promise<void>;
   onDeleteProject: (project: BusinessProject) => Promise<void>;
+  onCompleteProject: (project: BusinessProject) => Promise<void>;
   onDeleteExpense: (expense: ExpenseRequest) => Promise<void>;
   onDeleteReview: (review: ReviewItem) => Promise<void>;
+  onEditProject: (project: BusinessProject) => void;
   onEditPerson: (person: Person) => void;
 }) {
   // 20번: 프로젝트 상세 - 인포그래픽 + 매출/비용/순이익
@@ -4036,7 +4207,9 @@ function DetailModal({
           <Info label="반복 가능 고객" value={p.repeat_client ? "예" : "아니오"} />
           <Info label="메모" value={p.memo || "-"} />
         </div>
-        <div className="modal-actions danger-actions">
+        <div className="modal-actions project-actions">
+          <button className="btn blue" type="button" onClick={() => onEditProject(p)}>프로젝트 수정</button>
+          <button className="btn" type="button" onClick={() => onCompleteProject(p)} disabled={p.status === "납품 완료"}>{p.status === "납품 완료" ? "완료됨" : "완료 처리"}</button>
           <button className="btn danger" type="button" onClick={() => onDeleteProject(p)}>프로젝트 삭제</button>
         </div>
         <ReviewActions selectedReview={selectedReview} onClose={onClose} onReviewStatus={onReviewStatus} onDeleteReview={onDeleteReview} />
@@ -4201,6 +4374,26 @@ function InfoMini({ label, value }: { label: string; value: string }) {
       <span>{label}</span>
       <strong>{value}</strong>
     </div>
+  );
+}
+
+function CashSignal({
+  label, value, tone, amount, max, onClick
+}: {
+  label: string;
+  value: string;
+  tone: "green" | "orange" | "red" | "blue";
+  amount: number;
+  max: number;
+  onClick: () => void;
+}) {
+  const width = Math.max(6, Math.min(100, (Math.abs(amount) / Math.max(max, 1)) * 100));
+  return (
+    <button className={`cash-signal ${tone}`} type="button" onClick={onClick}>
+      <span>{label}</span>
+      <strong>{value}</strong>
+      <div className="cash-signal-track"><i style={{ width: `${width}%` }} /></div>
+    </button>
   );
 }
 

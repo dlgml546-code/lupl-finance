@@ -380,6 +380,11 @@ button { -webkit-tap-highlight-color: transparent; }
   margin-bottom: 16px;
 }
 
+.modal-notice {
+  margin-top: -4px;
+  margin-bottom: 18px;
+}
+
 .alert-top strong {
   display: block;
   font-size: 15px;
@@ -400,6 +405,94 @@ button { -webkit-tap-highlight-color: transparent; }
   grid-template-columns: minmax(360px, 1.22fr) repeat(3, minmax(0, 1fr));
   margin-bottom: 22px;
 }
+
+.overview-kpi-layout {
+  display: grid;
+  grid-template-columns: minmax(420px, 1.32fr) minmax(420px, 0.98fr);
+  gap: 22px;
+  align-items: stretch;
+  margin-bottom: 14px;
+}
+
+.overview-auto-kpis {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.overview-auto-kpis .kpi-card {
+  min-height: 154px;
+  padding: 18px;
+}
+
+.overview-auto-kpis .kpi-value {
+  font-size: clamp(21px, 1.55vw, 27px);
+  letter-spacing: 0;
+}
+
+.overview-flow-strip {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 14px;
+  margin-bottom: 22px;
+}
+
+.cash-signal {
+  min-width: 0;
+  border: 1px solid rgba(16, 24, 40, 0.06);
+  border-radius: 22px;
+  padding: 16px;
+  background: rgba(255, 255, 255, 0.86);
+  box-shadow: var(--shadow-soft);
+  text-align: left;
+  cursor: pointer;
+}
+
+.cash-signal:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 18px 42px rgba(16, 24, 40, 0.1);
+}
+
+.cash-signal span {
+  display: block;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 710;
+  line-height: 1.35;
+  word-break: keep-all;
+  margin-bottom: 8px;
+}
+
+.cash-signal strong {
+  display: block;
+  color: var(--ink);
+  font-size: 22px;
+  line-height: 1.2;
+  font-weight: 780;
+  letter-spacing: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cash-signal-track {
+  height: 9px;
+  border-radius: 999px;
+  background: rgba(16, 24, 40, 0.06);
+  overflow: hidden;
+  margin-top: 13px;
+}
+
+.cash-signal-track i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+}
+
+.cash-signal.green .cash-signal-track i { background: linear-gradient(90deg, #15c47e, #72ddb5); }
+.cash-signal.orange .cash-signal-track i { background: linear-gradient(90deg, #f59e0b, #ffd074); }
+.cash-signal.red .cash-signal-track i { background: linear-gradient(90deg, #f0506e, #ff94a9); }
+.cash-signal.blue .cash-signal-track i { background: linear-gradient(90deg, #3182f6, #73acff); }
 
 .grid.two { grid-template-columns: minmax(0, 1.2fr) minmax(360px, 0.8fr); }
 .grid.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
@@ -563,6 +656,12 @@ button { -webkit-tap-highlight-color: transparent; }
 .danger-actions {
   justify-content: flex-start;
   margin-top: 12px;
+}
+
+.project-actions {
+  justify-content: flex-start;
+  align-items: center;
+  margin-top: 14px;
 }
 .chip.red { background: var(--coral-soft); color: #9b4a43; }
 .chip.purple { background: var(--violet-soft); color: #6650c7; }
@@ -1416,9 +1515,11 @@ input:focus, select:focus, textarea:focus {
 @media (max-width: 1320px) {
   .app { grid-template-columns: 1fr; }
   .sidebar { position: static; height: auto; }
-  .grid.kpi, .grid.two, .grid.three, .grid.four, .quick-actions {
+  .grid.kpi, .grid.two, .grid.three, .grid.four, .quick-actions,
+  .overview-kpi-layout, .overview-flow-strip {
     grid-template-columns: 1fr;
   }
+  .overview-auto-kpis { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .form-row, .form-row.two-cols { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .stack-row { grid-template-columns: 1fr; }
 }
@@ -1428,7 +1529,7 @@ input:focus, select:focus, textarea:focus {
   .main { padding: 24px 18px 92px; }
   .topbar { flex-direction: column; }
   .home-actions { flex-wrap: wrap; width: 100%; }
-  .form-row, .form-row.two-cols, .hero-insights, .modal-info, .modal-form, .inline-row, .transfer-row { grid-template-columns: 1fr; }
+  .form-row, .form-row.two-cols, .hero-insights, .modal-info, .modal-form, .inline-row, .transfer-row, .overview-auto-kpis { grid-template-columns: 1fr; }
   .hero-value, .kpi-value { font-size: 28px; }
   .alert-top { grid-template-columns: 1fr; }
   .point-card { grid-template-columns: 1fr; }
