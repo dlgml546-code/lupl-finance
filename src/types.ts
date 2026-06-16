@@ -215,4 +215,6 @@ export type CashSnapshot = {
   payroll_included_expense: number | null;
   receivable_amount: number | null;
   payable_amount: number | null;
+  account_details?: Array<{ bank: string; label: string; balance: number }> | string | null;
+  transfer_details?: Array<{ purpose: string; amount: number; date: string; memo: string }> | string | null;
 };

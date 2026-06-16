@@ -710,6 +710,65 @@ button { -webkit-tap-highlight-color: transparent; }
   margin-bottom: 22px;
 }
 
+.cash-inline-breakdown {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.cash-inline-breakdown span,
+.cash-inline-breakdown strong {
+  min-height: 28px;
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 5px 9px;
+  background: rgba(255, 255, 255, 0.72);
+  border: 1px solid rgba(16, 24, 40, 0.06);
+  color: var(--ink-2);
+  font-size: 12px;
+  font-weight: 680;
+  white-space: nowrap;
+}
+
+.cash-inline-breakdown strong {
+  color: #315f9f;
+  background: rgba(238, 245, 255, 0.9);
+}
+
+.cash-account-list {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.cash-account-list div {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  color: var(--ink-2);
+  font-size: 12px;
+}
+
+.cash-account-list span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cash-account-list strong {
+  font-weight: 730;
+  white-space: nowrap;
+}
+
+.cash-account-total {
+  padding-top: 4px;
+  border-top: 1px solid rgba(16, 24, 40, 0.08);
+}
+
 .queue { display: grid; gap: 12px; }
 
 .queue-item {
@@ -852,6 +911,9 @@ tr.muted-row td { opacity: .65; }
 
 .table-scroll { overflow-x: auto; }
 .table-scroll table { min-width: 1060px; }
+.table-scroll.compact-table table { min-width: 640px; }
+.table-scroll.compact-table th,
+.table-scroll.compact-table td { padding-left: 10px; padding-right: 10px; }
 
 .metric-list { display: grid; gap: 12px; }
 
@@ -1527,6 +1589,7 @@ input:focus, select:focus, textarea:focus {
   text-overflow: ellipsis;
 }
 .table-scroll table { min-width: 1080px; }
+.table-scroll.compact-table table { min-width: 640px; }
 
 /* 섹션 툴바 (카드 관리 버튼 등) */
 .section-toolbar {

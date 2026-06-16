@@ -221,6 +221,19 @@ function handleMoneyInput(event: React.FormEvent<HTMLInputElement>) {
 
 type DbError = { message?: string; code?: string } | null;
 
+function getMissingColumn(error: DbError) {
+  const raw = String(error?.message || "");
+  const lower = raw.toLowerCase();
+  const code = String(error?.code || "");
+  const isMissingColumn =
+    code === "PGRST204" ||
+    lower.includes("schema cache") ||
+    (lower.includes("column") && (lower.includes("could not find") || lower.includes("does not exist")));
+  if (!isMissingColumn) return null;
+  const match = raw.match(/'([^']+)' column/i) || raw.match(/column "?([a-zA-Z0-9_]+)"?/i);
+  return match?.[1] || null;
+}
+
 // 배포된 테이블에 일부 컬럼이 빠져 있어도(스키마 드리프트) 등록이 막히지 않도록,
 // PostgREST가 "없는 컬럼"을 알려주면 그 컬럼만 제거하고 다시 시도하는 공통 저장 함수.
 // preserveToMemo에 지정된 컬럼이 제거되면 그 값을 memo로 보존한다.
@@ -242,17 +255,7 @@ async function saveWithHealing<T = Record<string, unknown>>(
     error = res.error as DbError;
     if (!error) break;
 
-    const raw = String(error.message || "");
-    const lower = raw.toLowerCase();
-    const code = String(error.code || "");
-    const isMissingColumn =
-      code === "PGRST204" ||
-      lower.includes("schema cache") ||
-      (lower.includes("column") && (lower.includes("could not find") || lower.includes("does not exist")));
-    if (!isMissingColumn) break;
-
-    const match = raw.match(/'([^']+)' column/i) || raw.match(/column "?([a-zA-Z0-9_]+)"?/i);
-    const badColumn = match?.[1];
+    const badColumn = getMissingColumn(error);
     if (!badColumn || !(badColumn in attempt)) break;
 
     if (preserve[badColumn] && "memo" in attempt) {
@@ -261,6 +264,91 @@ async function saveWithHealing<T = Record<string, unknown>>(
     delete attempt[badColumn];
   }
   return { data, error };
+}
+
+async function updateWithHealing<T = Record<string, unknown>>(
+  table: string,
+  payload: Record<string, unknown>,
+  eqColumn: string,
+  eqValue: string
+): Promise<{ data: T | null; error: DbError }> {
+  const attempt: Record<string, unknown> = { ...payload };
+  let data: T | null = null;
+  let error: DbError = null;
+  for (let i = 0; i < 24; i++) {
+    const res = await supabase.from(table).update(attempt).eq(eqColumn, eqValue).select().single();
+    data = (res.data as T) ?? null;
+    error = res.error as DbError;
+    if (!error) break;
+    const badColumn = getMissingColumn(error);
+    if (!badColumn || !(badColumn in attempt)) break;
+    delete attempt[badColumn];
+  }
+  return { data, error };
+}
+
+const legacyBusinessCategories = ["교육", "문서작업", "홈페이지", "메타버스", "마케팅", "행사", "전시", "영상", "제품 제작", "디자인", "광고/홍보"];
+
+function toLegacyBusinessCategory(major: string) {
+  return legacyBusinessCategories.includes(major) ? major : "교육";
+}
+
+function isRecurringExpense(expense: Pick<ExpenseRequest, "is_recurring" | "recurring_cycle" | "evidence_status" | "review_reason" | "memo" | "purpose">) {
+  const haystack = [expense.evidence_status, expense.review_reason, expense.recurring_cycle, expense.memo, expense.purpose].filter(Boolean).join(" ");
+  return Boolean(expense.is_recurring || expense.recurring_cycle || haystack.includes("정기결제") || haystack.includes("정기 구독") || haystack.includes("정기지출") || haystack.includes("반복 결제") || haystack.includes("구독"));
+}
+
+function isMonthlyRecurringExpense(expense: ExpenseRequest) {
+  if (!isRecurringExpense(expense)) return false;
+  return !expense.recurring_cycle || expense.recurring_cycle === "매월" || expense.memo?.includes("매월") || expense.review_reason?.includes("매월");
+}
+
+function isVisibleCashSnapshot(snapshot: CashSnapshot) {
+  const month = String(snapshot.snapshot_month || "");
+  const looksLikeSeed = Number(snapshot.current_cash || 0) === 50000000 && Number(snapshot.revenue || 0) === 5000000 && Number(snapshot.expense || 0) === 4200000;
+  return month >= "2026-06-01" && !looksLikeSeed;
+}
+
+function parseJsonArray<T>(value: unknown): T[] {
+  if (Array.isArray(value)) return value as T[];
+  if (typeof value === "string") {
+    try {
+      const parsed = JSON.parse(value);
+      return Array.isArray(parsed) ? parsed as T[] : [];
+    } catch {
+      return [];
+    }
+  }
+  return [];
+}
+
+type CashAccountDetail = { bank: string; label: string; balance: number };
+type CashTransferDetail = { purpose: string; amount: number; date: string; memo: string };
+
+function cashAccountBackupKey(month: string) {
+  return `lupl.cashAccounts.${month.slice(0, 7)}`;
+}
+
+function readCashAccountBackup(month: string) {
+  try {
+    const raw = window.localStorage.getItem(cashAccountBackupKey(month));
+    return raw ? parseJsonArray<CashAccountDetail>(raw) : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeCashAccountBackup(month: string, accounts: CashAccountDetail[]) {
+  try {
+    window.localStorage.setItem(cashAccountBackupKey(month), JSON.stringify(accounts));
+  } catch {
+    /* local backup is best-effort */
+  }
+}
+
+function getCashAccounts(snapshot: CashSnapshot) {
+  const fromDb = parseJsonArray<CashAccountDetail>((snapshot as CashSnapshot & { account_details?: unknown }).account_details);
+  return fromDb.length > 0 ? fromDb : readCashAccountBackup(String(snapshot.snapshot_month || ""));
 }
 
 // RLS/권한 오류는 사용자가 알아볼 수 있게 한국어로 바꾼다.
@@ -402,7 +490,8 @@ export default function App() {
   const [toast, setToast] = useState<Toast>(null);
 
   const pendingReviews = reviews.filter((review) => review.status === "검토 전");
-  const latestCash = cash[0];
+  const visibleCash = useMemo(() => cash.filter(isVisibleCashSnapshot), [cash]);
+  const latestCash = visibleCash[0];
 
   const activeMeta = sectionMeta[section];
   const availableMenu = menu.filter((item) => canOpenPage(currentPerson, permissions, item.key));
@@ -631,11 +720,13 @@ export default function App() {
       const middle = String(formData.get("project_middle_category") || "");
       const small = String(formData.get("project_small_category") || "");
       const groups = [major, middle, small].filter(Boolean);
+      const legacyCategory = toLegacyBusinessCategory(major);
       const monthlyPaymentMemo = String(formData.get("payment_due_cycle") || "") === "monthly" ? "입금 예정: 매월 반복" : "";
       const plainMemo = String(formData.get("memo") || "");
       const categoryMemo = groups.length ? `프로젝트 분류: ${groups.join(" > ")}` : "";
       const payload = {
         name: String(formData.get("name") || ""),
+        category: legacyCategory,
         client_type: (String(formData.get("client_type") || "") || null) as ClientType | null,
         project_major_category: major || null,
         project_middle_category: middle || null,
@@ -928,6 +1019,8 @@ export default function App() {
     try {
       const expenseId = String(formData.get("expense_id") || "");
       if (!expenseId) throw new Error("수정할 지출결의를 찾지 못했습니다.");
+      const nextIsRecurring = formData.get("is_recurring") === "on";
+      const nextRecurringCycle = String(formData.get("recurring_cycle") || (nextIsRecurring ? "매월" : ""));
       const payload = {
         used_at: String(formData.get("used_at") || today()),
         purpose: String(formData.get("purpose") || "지출"),
@@ -935,22 +1028,24 @@ export default function App() {
         payment_method: String(formData.get("payment_method") || "카드") as PaymentMethod,
         card_id: String(formData.get("card_id") || "") || null,
         amount: parseNumber(formData.get("amount")),
+        evidence_status: nextIsRecurring ? "정기결제" : String(formData.get("evidence_status") || "증빙 필요"),
         transfer_status: String(formData.get("transfer_status") || "해당 없음") as TransferStatus,
         transfer_summary: String(formData.get("transfer_summary") || "") || null,
         project_id: String(formData.get("project_id") || "") || null,
-        recurring_cycle: String(formData.get("recurring_cycle") || "") || null,
-        is_recurring: formData.get("is_recurring") === "on",
+        recurring_cycle: nextRecurringCycle || null,
+        is_recurring: nextIsRecurring,
+        review_reason: nextIsRecurring ? "정기 구독/반복 지출 확인" : "대표 검토 필요",
         memo: String(formData.get("memo") || "")
       };
-      const { error } = await supabase.from("expense_requests").update(payload).eq("id", expenseId);
+      const { error } = await updateWithHealing("expense_requests", payload, "id", expenseId);
       if (error) throw toFriendlyDbError(error, "지출결의를 수정하지 못했습니다.");
       await supabase
         .from("review_items")
         .update({
-          title: payload.is_recurring ? `[정기] ${payload.purpose}` : payload.purpose,
+          title: nextIsRecurring ? `[정기] ${payload.purpose}` : payload.purpose,
           amount_or_impact: formatWon(payload.amount),
-          checklist: payload.is_recurring
-            ? `${payload.recurring_cycle || "반복"} 결제 항목입니다. 결제수단·금액·해지 필요 여부를 확인하세요.`
+          checklist: nextIsRecurring
+            ? `${nextRecurringCycle || "반복"} 결제 항목입니다. 결제수단·금액·해지 필요 여부를 확인하세요.`
             : "증빙 첨부 여부, 사용 용도 분류, 결제수단(법인/개인), 이체 여부를 확인하세요."
         })
         .eq("target_table", "expense_requests")
@@ -1064,9 +1159,30 @@ export default function App() {
       const receivable = projectsComputed.reduce((sum, project) => sum + Number(project._receivable || 0), 0);
       const payable = expenses.filter((expense) => expense.review_status !== "승인").reduce((sum, expense) => sum + Number(expense.amount || 0), 0);
       const accountBalances = formData.getAll("account_balance").map((value) => parseNumber(value));
+      const accountBanks = formData.getAll("account_bank").map(String);
+      const accountLabels = formData.getAll("account_label").map(String);
+      const accountDetails = accountBalances
+        .map((balance, index) => ({
+          bank: accountBanks[index]?.trim() || "",
+          label: accountLabels[index]?.trim() || "",
+          balance
+        }))
+        .filter((item) => item.bank || item.label || item.balance > 0);
       const accountTotal = accountBalances.reduce((sum, value) => sum + value, 0);
       const currentCash = accountTotal || parseNumber(formData.get("current_cash"));
       const netBurn = Math.max(0, expense - revenue);
+      const transferNames = formData.getAll("auto_transfer_purpose").map(String);
+      const transferAmounts = formData.getAll("auto_transfer_amount");
+      const transferDates = formData.getAll("auto_transfer_date").map(String);
+      const transferMemos = formData.getAll("auto_transfer_memo").map(String);
+      const transferDetails = transferNames
+        .map((purpose, index) => ({
+          purpose: purpose.trim(),
+          amount: parseNumber(transferAmounts[index]),
+          date: transferDates[index] || today(),
+          memo: transferMemos[index] || ""
+        }))
+        .filter((item) => item.purpose || item.amount > 0);
       const payload = {
         snapshot_month: `${monthInput}-01`,
         current_cash: currentCash,
@@ -1076,15 +1192,14 @@ export default function App() {
         receivable_amount: receivable,
         payable_amount: payable,
         payroll_included_expense: expense,
-        runway_months: netBurn > 0 ? Math.round((currentCash / netBurn) * 10) / 10 : 0
+        runway_months: netBurn > 0 ? Math.round((currentCash / netBurn) * 10) / 10 : 0,
+        account_details: accountDetails,
+        transfer_details: transferDetails
       };
 
       const { error } = await saveWithHealing("cash_snapshots", payload, { upsert: { onConflict: "snapshot_month" } });
       if (error) throw toFriendlyDbError(error, "현금 현황 저장에 실패했습니다.");
-      const transferNames = formData.getAll("auto_transfer_purpose").map(String);
-      const transferAmounts = formData.getAll("auto_transfer_amount");
-      const transferDates = formData.getAll("auto_transfer_date").map(String);
-      const transferMemos = formData.getAll("auto_transfer_memo").map(String);
+      writeCashAccountBackup(monthInput, accountDetails);
       const transfers = transferNames
         .map((purpose, index) => ({
           used_at: transferDates[index] || today(),
@@ -1111,13 +1226,21 @@ export default function App() {
         .filter((item) => item.purpose && item.amount > 0);
 
       if (transfers.length > 0) {
-        const { data: inserted, error: transferError } = await supabase.from("expense_requests").insert(transfers).select();
+        const inserted: ExpenseRequest[] = [];
+        let transferError: DbError = null;
+        for (const transfer of transfers) {
+          const result = await saveWithHealing<ExpenseRequest>("expense_requests", transfer);
+          if (result.error) {
+            transferError = result.error;
+            break;
+          }
+          if (result.data) inserted.push(result.data);
+        }
         if (transferError) {
-          // 스냅샷은 이미 저장됐으므로 전체 실패로 되돌리지 않고 경고만 남긴다.
           console.warn("auto transfer insert failed", transferError);
           showToast("현금 현황은 저장됐지만 자동이체 항목 등록은 실패했습니다. 자동이체는 다시 시도해 주세요.", "warn");
         } else {
-          await Promise.all((inserted || []).map((expense) => createReviewItem({
+          await Promise.all(inserted.map((expense) => createReviewItem({
             area: "지출결의",
             title: expense.purpose,
             reason: "자동이체 처리 확인",
@@ -1409,23 +1532,12 @@ export default function App() {
           allocation_rate: 0.35,
           man_months: 0.35,
           hours: 56
-        }),
-        supabase.from("cash_snapshots").upsert({
-          snapshot_month: `${today().slice(0, 7)}-01`,
-          current_cash: 50000000,
-          revenue: 5000000,
-          expense: 4200000,
-          net_burn: 0,
-          runway_months: 0,
-          payroll_included_expense: 4200000,
-          receivable_amount: 7000000,
-          payable_amount: 88680
-        }, { onConflict: "snapshot_month" })
+        })
       ]);
       const demoError = demoResults.find((result) => result.error)?.error;
       if (demoError) throw demoError;
 
-      showToast("전체 더미 데이터를 주요 화면별로 넣었습니다.");
+      showToast("현금 현황을 제외한 검증 데이터를 넣었습니다.");
       await loadAll();
     } catch (error) {
       console.error(error);
@@ -1523,7 +1635,7 @@ export default function App() {
         </header>
 
         {section === "overview" && (
-          <Overview setSection={setSection} reviewCount={pendingReviews.length} cash={cash} projects={projectsComputed} expenses={expenses} people={people} onAddCash={() => setModal("cashForm")} onOpenCashHistory={() => setModal("cashHistory")} />
+          <Overview setSection={setSection} reviewCount={pendingReviews.length} cash={visibleCash} projects={projectsComputed} expenses={expenses} people={people} onAddCash={() => setModal("cashForm")} onOpenCashHistory={() => setModal("cashHistory")} />
         )}
         {section === "review" && (
           <ReviewInbox
@@ -1626,7 +1738,7 @@ export default function App() {
         currentPerson={currentPerson}
         people={people}
         departments={departments}
-        cash={cash}
+        cash={visibleCash}
         projects={projectsComputed}
         cards={cards}
         categories={categories}
@@ -1767,6 +1879,8 @@ function Overview({
   const monthlyRevenue = autoRevenue || autoConfirmedRevenue || latest?.revenue || 0;
   const monthlyExpense = autoExpense + autoPayroll || latest?.expense || 0;
   const currentCash = latest?.current_cash ?? null;
+  const latestAccounts = latest ? getCashAccounts(latest) : [];
+  const latestAccountSum = latestAccounts.reduce((sum, account) => sum + Number(account.balance || 0), 0);
   const netBurn = Math.max(0, Number(monthlyExpense) - Number(monthlyRevenue));
   const runway = currentCash != null && netBurn > 0 ? Math.round((Number(currentCash) / netBurn) * 10) / 10 : latest?.runway_months ?? null;
   const receivable = projects.reduce((s, p) => s + p._receivable, 0);
@@ -1810,6 +1924,14 @@ function Overview({
               </div>
             )}
             {hasCash && <div className="hero-copy">클릭하면 입력했던 월별 현금 데이터를 모두 확인합니다.</div>}
+            {latestAccounts.length > 0 && (
+              <div className="cash-inline-breakdown">
+                {latestAccounts.slice(0, 3).map((account, index) => (
+                  <span key={`${account.bank}-${account.label}-${index}`}>{account.label || account.bank || "통장"} {formatWonShort(account.balance)}</span>
+                ))}
+                <strong>합계 {formatWon(latestAccountSum)}</strong>
+              </div>
+            )}
           </div>
           {hasCash && (
             <div className="hero-insights">
@@ -1944,8 +2066,15 @@ function Expense({
 }) {
   const pending = expenses.filter((item) => item.review_status === "검토 전");
   const currentMonth = today().slice(0, 7);
-  const recurringTotal = expenses.filter((item) => item.is_recurring).reduce((sum, item) => sum + Number(item.amount || 0), 0);
-  const monthTotal = expenses.filter((item) => String(item.used_at || "").startsWith(currentMonth)).reduce((sum, item) => sum + Number(item.amount || 0), 0);
+  const recurringExpenses = expenses.filter(isRecurringExpense);
+  const recurringTotal = recurringExpenses.reduce((sum, item) => sum + Number(item.amount || 0), 0);
+  const monthNonRecurringTotal = expenses
+    .filter((item) => !isRecurringExpense(item) && String(item.used_at || "").startsWith(currentMonth))
+    .reduce((sum, item) => sum + Number(item.amount || 0), 0);
+  const monthRecurringTotal = recurringExpenses
+    .filter((item) => isMonthlyRecurringExpense(item) || String(item.used_at || "").startsWith(currentMonth))
+    .reduce((sum, item) => sum + Number(item.amount || 0), 0);
+  const monthTotal = monthNonRecurringTotal + monthRecurringTotal;
   const totalExpense = expenses.reduce((sum, item) => sum + Number(item.amount || 0), 0);
   const pendingTotal = pending.reduce((sum, item) => sum + Number(item.amount || 0), 0);
 
@@ -1955,7 +2084,7 @@ function Expense({
         <button className="btn small" onClick={onManageCard}>결제수단(카드) 관리</button>
       </div>
       <div className="grid four expense-summary">
-        <KpiCard compact label="정기 결제" value={formatWon(recurringTotal)} chip={`${expenses.filter((item) => item.is_recurring).length}건`} tone="blue" empty={expenses.length === 0} />
+        <KpiCard compact label="정기 결제" value={formatWon(recurringTotal)} chip={`${recurringExpenses.length}건`} tone="blue" empty={recurringExpenses.length === 0} />
         <KpiCard compact label="6월 지출" value={formatWon(monthTotal)} chip="이번 달" tone="red" empty={expenses.length === 0} />
         <KpiCard compact label="총 지출" value={formatWon(totalExpense)} chip={`${expenses.length}건`} tone="orange" empty={expenses.length === 0} />
         <KpiCard compact label="검토 대기" value={formatWon(pendingTotal)} chip={`${pending.length}건`} tone="green" empty={pending.length === 0} />
@@ -2017,7 +2146,7 @@ function Expense({
               <tbody>
                 {expenses.map((expense) => (
                   <tr key={expense.id} className="clickable" onClick={() => onOpenExpense(expense)}>
-                    <td>{expense.used_at}{expense.is_recurring ? " 🔁" : ""}</td>
+                    <td>{expense.used_at}{isRecurringExpense(expense) ? " 반복" : ""}</td>
                     <td>{expense.purpose}</td>
                     <td>{expense.usage}</td>
                     <td>{expense.payment_method}{expense.card_id ? ` (${cards.find((c) => c.id === expense.card_id)?.label || ""})` : ""}</td>
@@ -2171,10 +2300,10 @@ function Compensation({
           {people.length === 0 ? (
             <EmptyState text="등록된 직원이 없습니다. ‘직원 추가’로 등록하세요." />
           ) : (
-            <div className="table-scroll">
+            <div className="table-scroll compact-table">
               <table>
                 <thead>
-                  <tr><th>이름</th><th>직위</th><th>부서</th><th className="num">계약연봉</th><th className="num">전년도</th><th>상세</th></tr>
+                  <tr><th style={{ width: 96 }}>이름</th><th style={{ width: 76 }}>직위</th><th style={{ width: 118 }}>부서</th><th className="num" style={{ width: 118 }}>계약연봉</th><th className="num" style={{ width: 118 }}>전년도</th><th style={{ width: 72 }}>상세</th></tr>
                 </thead>
                 <tbody>
                   {people.map((person) => (
@@ -3235,6 +3364,7 @@ function ExpenseEditForm({
         }}
       >
         <input type="hidden" name="expense_id" value={expense.id} />
+        <input type="hidden" name="evidence_status" value={expense.evidence_status || "증빙 필요"} />
         <label>사용일<input type="date" name="used_at" defaultValue={expense.used_at || today()} /></label>
         <label>목적/항목명<input name="purpose" defaultValue={expense.purpose} required /></label>
         <label>사용 용도<select name="usage" defaultValue={expense.usage}>{expenseUsages.map((c) => <option key={c}>{c}</option>)}{categories.filter((c) => !expenseUsages.includes(c.name as ExpenseUsage)).map((c) => <option key={c.id}>{c.name}</option>)}</select></label>
@@ -4020,6 +4150,7 @@ function CashHistory({ cash, onClose }: { cash: CashSnapshot[]; onClose: () => v
               <tr>
                 <th style={{ width: 100 }}>기준 월</th>
                 <th className="num" style={{ width: 140 }}>현재 현금</th>
+                <th style={{ width: 240 }}>통장별 현금 현황</th>
                 <th className="num" style={{ width: 130 }}>매출</th>
                 <th className="num" style={{ width: 130 }}>지출</th>
                 <th className="num" style={{ width: 130 }}>순현금흐름</th>
@@ -4029,18 +4160,34 @@ function CashHistory({ cash, onClose }: { cash: CashSnapshot[]; onClose: () => v
               </tr>
             </thead>
             <tbody>
-              {items.map((item) => (
-                <tr key={item.id}>
-                  <td>{String(item.snapshot_month).slice(0, 7)}</td>
-                  <td className="num strong-num">{formatWon(item.current_cash)}</td>
-                  <td className="num">{formatWon(item.revenue)}</td>
-                  <td className="num">{formatWon(item.expense)}</td>
-                  <td className="num">{formatWon(Number(item.revenue || 0) - Number(item.expense || 0))}</td>
-                  <td className="num">{formatWon(item.receivable_amount)}</td>
-                  <td className="num">{formatWon(item.payable_amount)}</td>
-                  <td className="num">{item.runway_months ? `${item.runway_months}개월` : "-"}</td>
-                </tr>
-              ))}
+              {items.map((item) => {
+                const accounts = getCashAccounts(item);
+                const accountSum = accounts.reduce((sum, account) => sum + Number(account.balance || 0), 0);
+                return (
+                  <tr key={item.id}>
+                    <td>{String(item.snapshot_month).slice(0, 7)}</td>
+                    <td className="num strong-num">{formatWon(item.current_cash)}</td>
+                    <td>
+                      {accounts.length > 0 ? (
+                        <div className="cash-account-list">
+                          {accounts.map((account, index) => (
+                            <div key={`${item.id}-${index}`}><span>{[account.bank, account.label].filter(Boolean).join(" · ") || "통장"}</span><strong>{formatWon(account.balance)}</strong></div>
+                          ))}
+                          <div className="cash-account-total"><span>통장 합계</span><strong>{formatWon(accountSum)}</strong></div>
+                        </div>
+                      ) : (
+                        <span className="muted-cell">세부 내역 미저장</span>
+                      )}
+                    </td>
+                    <td className="num">{formatWon(item.revenue)}</td>
+                    <td className="num">{formatWon(item.expense)}</td>
+                    <td className="num">{formatWon(Number(item.revenue || 0) - Number(item.expense || 0))}</td>
+                    <td className="num">{formatWon(item.receivable_amount)}</td>
+                    <td className="num">{formatWon(item.payable_amount)}</td>
+                    <td className="num">{item.runway_months ? `${item.runway_months}개월` : "-"}</td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>

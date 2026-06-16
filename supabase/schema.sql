@@ -79,6 +79,8 @@ alter table if exists public.business_projects add column if not exists project_
 alter table if exists public.business_projects add column if not exists project_middle_category text;
 alter table if exists public.business_projects add column if not exists project_small_category text;
 alter table if exists public.business_projects add column if not exists operator_label text;
+alter table if exists public.cash_snapshots add column if not exists account_details jsonb default '[]'::jsonb;
+alter table if exists public.cash_snapshots add column if not exists transfer_details jsonb default '[]'::jsonb;
 
 -- 구버전 배포 DB에 business_category enum/category 컬럼이 남아 있을 때 신규 분류 저장 오류 방지
 do $$
@@ -255,6 +257,8 @@ create table if not exists public.cash_snapshots (
   payroll_included_expense numeric(14,0) default 0,
   receivable_amount numeric(14,0) default 0,
   payable_amount numeric(14,0) default 0,
+  account_details jsonb default '[]'::jsonb,
+  transfer_details jsonb default '[]'::jsonb,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
