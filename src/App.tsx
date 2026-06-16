@@ -287,10 +287,25 @@ async function updateWithHealing<T = Record<string, unknown>>(
   return { data, error };
 }
 
-const legacyBusinessCategories = ["교육", "문서작업", "홈페이지", "메타버스", "마케팅", "행사", "전시", "영상", "제품 제작", "디자인", "광고/홍보"];
+const legacyBusinessCategories = [
+  "외주용역", "지원사업", "자체사업", "기타",
+  "교육 프로그램", "교육프로그램", "프로젝트", "강의", "행사", "전시", "연구", "개발",
+  "교육", "문서작업", "홈페이지", "메타버스", "마케팅", "영상", "제품 제작", "디자인", "광고/홍보",
+  "러플 마진 계산기", "일반학교", "특수학교", "공공기관", "기업", "비영리재단"
+];
 
 function toLegacyBusinessCategory(major: string) {
-  return legacyBusinessCategories.includes(major) ? major : "교육";
+  return legacyBusinessCategories.includes(major) ? major : legacyBusinessCategories[0];
+}
+
+function isInvalidBusinessCategoryError(error: DbError) {
+  const raw = String(error?.message || "").toLowerCase();
+  return raw.includes("invalid input value for enum business_category");
+}
+
+function isProjectCategoryRequiredError(error: DbError) {
+  const raw = String(error?.message || "").toLowerCase();
+  return raw.includes("column \"category\"") && raw.includes("not-null");
 }
 
 function isRecurringExpense(expense: Pick<ExpenseRequest, "is_recurring" | "recurring_cycle" | "evidence_status" | "review_reason" | "memo" | "purpose">) {
@@ -750,23 +765,55 @@ export default function App() {
         tax_invoice_date: String(formData.get("tax_invoice_date") || "") || null,
         repeat_client: formData.get("repeat_client") === "on",
         owner_id: currentPerson?.id || null,
-        memo: [monthlyPaymentMemo, plainMemo].filter(Boolean).join("\n")
+        memo: [categoryMemo, monthlyPaymentMemo, plainMemo].filter(Boolean).join("\n")
       };
 
       // 스키마 드리프트(배포 테이블에 일부 컬럼이 없음)에도 등록이 막히지 않도록 공통 저장 함수 사용.
-      const { data, error } = await saveWithHealing<{ id: string; name: string; owner_label: string | null; confirmed_amount: number }>(
-        "business_projects",
-        payload,
-        {
-          preserveToMemo: {
-            project_major_category: categoryMemo,
-            project_middle_category: categoryMemo,
-            project_small_category: categoryMemo,
-            project_group: categoryMemo,
-            operator_label: `우리 팀 실무 담당자: ${payload.operator_label || "-"}`
+      let data: { id: string; name: string; owner_label: string | null; confirmed_amount: number } | null = null;
+      let error: DbError = null;
+      const existingLegacyCategories = (projects as Array<BusinessProject & { category?: string | null }>)
+        .map((project) => String(project.category || "").trim())
+        .filter(Boolean);
+      const categoryCandidates = Array.from(new Set([legacyCategory, ...existingLegacyCategories, ...legacyBusinessCategories]));
+      for (const candidate of categoryCandidates) {
+        const result = await saveWithHealing<{ id: string; name: string; owner_label: string | null; confirmed_amount: number }>(
+          "business_projects",
+          { ...payload, category: candidate },
+          {
+            preserveToMemo: {
+              project_major_category: categoryMemo,
+              project_middle_category: categoryMemo,
+              project_small_category: categoryMemo,
+              project_group: categoryMemo,
+              operator_label: `우리 팀 실무 담당자: ${payload.operator_label || "-"}`
+            }
           }
-        }
-      );
+        );
+        data = result.data;
+        error = result.error;
+        if (!error) break;
+        if (!isInvalidBusinessCategoryError(error)) break;
+      }
+      if (error && isInvalidBusinessCategoryError(error)) {
+        const result = await saveWithHealing<{ id: string; name: string; owner_label: string | null; confirmed_amount: number }>(
+          "business_projects",
+          { ...payload, category: undefined },
+          {
+            preserveToMemo: {
+              project_major_category: categoryMemo,
+              project_middle_category: categoryMemo,
+              project_small_category: categoryMemo,
+              project_group: categoryMemo,
+              operator_label: `우리 팀 실무 담당자: ${payload.operator_label || "-"}`
+            }
+          }
+        );
+        data = result.data;
+        error = result.error;
+      }
+      if (error && isProjectCategoryRequiredError(error)) {
+        throw new Error("배포 DB의 business_projects.category enum 값이 현재 앱과 맞지 않습니다. Supabase schema.sql을 한 번 적용해야 합니다.");
+      }
       if (error) throw toFriendlyDbError(error, "프로젝트 등록에 실패했습니다.");
       if (!data) throw new Error("프로젝트 저장 결과를 받지 못했습니다.");
 
@@ -2064,9 +2111,15 @@ function Expense({
   onRecurring: () => void;
   onManageCard: () => void;
 }) {
+  type ExpenseMetricKey = "recurring" | "month" | "total" | "pending";
+  const [activeMetric, setActiveMetric] = useState<ExpenseMetricKey>("recurring");
   const pending = expenses.filter((item) => item.review_status === "검토 전");
   const currentMonth = today().slice(0, 7);
   const recurringExpenses = expenses.filter(isRecurringExpense);
+  const monthExpenses = expenses.filter((item) => {
+    if (isRecurringExpense(item)) return isMonthlyRecurringExpense(item) || String(item.used_at || "").startsWith(currentMonth);
+    return String(item.used_at || "").startsWith(currentMonth);
+  });
   const recurringTotal = recurringExpenses.reduce((sum, item) => sum + Number(item.amount || 0), 0);
   const monthNonRecurringTotal = expenses
     .filter((item) => !isRecurringExpense(item) && String(item.used_at || "").startsWith(currentMonth))
@@ -2077,6 +2130,44 @@ function Expense({
   const monthTotal = monthNonRecurringTotal + monthRecurringTotal;
   const totalExpense = expenses.reduce((sum, item) => sum + Number(item.amount || 0), 0);
   const pendingTotal = pending.reduce((sum, item) => sum + Number(item.amount || 0), 0);
+  const metricDetails: Record<ExpenseMetricKey, { title: string; desc: string; total: number; items: ExpenseRequest[]; tone: "blue" | "red" | "orange" | "green" }> = {
+    recurring: {
+      title: "정기 결제 상세",
+      desc: "매월 반복되거나 구독/정기결제로 표시된 지출입니다.",
+      total: recurringTotal,
+      items: recurringExpenses,
+      tone: "blue"
+    },
+    month: {
+      title: `${Number(currentMonth.slice(5))}월 지출 상세`,
+      desc: "이번 달 사용일 기준 지출과 매월 반복 지출을 함께 반영합니다.",
+      total: monthTotal,
+      items: monthExpenses,
+      tone: "red"
+    },
+    total: {
+      title: "총 지출 상세",
+      desc: "등록된 모든 지출결의 금액의 합계입니다.",
+      total: totalExpense,
+      items: expenses,
+      tone: "orange"
+    },
+    pending: {
+      title: "검토 대기 상세",
+      desc: "대표 검토가 아직 끝나지 않은 지출결의입니다.",
+      total: pendingTotal,
+      items: pending,
+      tone: "green"
+    }
+  };
+  const activeDetail = metricDetails[activeMetric];
+  const activeTopItems = [...activeDetail.items].sort((a, b) => Number(b.amount || 0) - Number(a.amount || 0)).slice(0, 6);
+  const maxActiveAmount = Math.max(...activeTopItems.map((item) => Number(item.amount || 0)), 1);
+  const usageBreakdown = Object.entries(activeDetail.items.reduce<Record<string, number>>((acc, item) => {
+    const key = item.usage || "미분류";
+    acc[key] = (acc[key] || 0) + Number(item.amount || 0);
+    return acc;
+  }, {})).sort((a, b) => b[1] - a[1]).slice(0, 5);
 
   return (
     <section className="section active">
@@ -2084,10 +2175,56 @@ function Expense({
         <button className="btn small" onClick={onManageCard}>결제수단(카드) 관리</button>
       </div>
       <div className="grid four expense-summary">
-        <KpiCard compact label="정기 결제" value={formatWon(recurringTotal)} chip={`${recurringExpenses.length}건`} tone="blue" empty={recurringExpenses.length === 0} />
-        <KpiCard compact label="6월 지출" value={formatWon(monthTotal)} chip="이번 달" tone="red" empty={expenses.length === 0} />
-        <KpiCard compact label="총 지출" value={formatWon(totalExpense)} chip={`${expenses.length}건`} tone="orange" empty={expenses.length === 0} />
-        <KpiCard compact label="검토 대기" value={formatWon(pendingTotal)} chip={`${pending.length}건`} tone="green" empty={pending.length === 0} />
+        <KpiCard compact label="정기 결제" value={formatWon(recurringTotal)} chip={`${recurringExpenses.length}건`} tone="blue" empty={recurringExpenses.length === 0} active={activeMetric === "recurring"} onClick={() => setActiveMetric("recurring")} />
+        <KpiCard compact label={`${Number(currentMonth.slice(5))}월 지출`} value={formatWon(monthTotal)} chip="이번 달" tone="red" empty={expenses.length === 0} active={activeMetric === "month"} onClick={() => setActiveMetric("month")} />
+        <KpiCard compact label="총 지출" value={formatWon(totalExpense)} chip={`${expenses.length}건`} tone="orange" empty={expenses.length === 0} active={activeMetric === "total"} onClick={() => setActiveMetric("total")} />
+        <KpiCard compact label="검토 대기" value={formatWon(pendingTotal)} chip={`${pending.length}건`} tone="green" empty={pending.length === 0} active={activeMetric === "pending"} onClick={() => setActiveMetric("pending")} />
+      </div>
+      <div className="card solid expense-detail-panel">
+        <div className="expense-detail-head">
+          <div>
+            <h2 className="card-title">{activeDetail.title}</h2>
+            <p className="card-sub">{activeDetail.desc}</p>
+          </div>
+          <div className={`expense-detail-total ${activeDetail.tone}`}>
+            <span>{activeDetail.items.length}건</span>
+            <strong>{formatWon(activeDetail.total)}</strong>
+          </div>
+        </div>
+        {activeDetail.items.length === 0 ? (
+          <EmptyState text="표시할 세부 항목이 없습니다." />
+        ) : (
+          <div className="expense-detail-grid">
+            <div className="expense-detail-bars">
+              {activeTopItems.map((item) => {
+                const width = Math.max(7, Math.round((Number(item.amount || 0) / maxActiveAmount) * 100));
+                return (
+                  <button type="button" className="expense-detail-row" key={item.id} onClick={() => onOpenExpense(item)}>
+                    <div className="expense-detail-row-main">
+                      <strong>{item.purpose}</strong>
+                      <span>{item.used_at}{isRecurringExpense(item) ? " · 정기" : ""} · {item.usage}</span>
+                      <div className="expense-bar-track"><div className={`expense-bar-fill ${activeDetail.tone}`} style={{ width: `${width}%` }} /></div>
+                    </div>
+                    <b>{formatWon(item.amount)}</b>
+                  </button>
+                );
+              })}
+            </div>
+            <div className="expense-breakdown">
+              <h3>용도별 비중</h3>
+              {usageBreakdown.map(([usage, amount]) => {
+                const percent = activeDetail.total ? Math.round((amount / activeDetail.total) * 100) : 0;
+                return (
+                  <div className="expense-breakdown-row" key={usage}>
+                    <span>{usage}</span>
+                    <strong>{formatWon(amount)}</strong>
+                    <em>{percent}%</em>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
       </div>
       <div className="grid two">
         <div className="card">
@@ -2712,7 +2849,7 @@ function Modal({
         )}
 
         {modal === "cashHistory" && (
-          <CashHistory cash={cash} onClose={close} />
+          <CashHistory cash={cash} onClose={close} onAddCash={() => setModal("cashForm")} />
         )}
 
         {modal === "categoryManage" && (
@@ -4068,7 +4205,7 @@ function InfoMini({ label, value }: { label: string; value: string }) {
 }
 
 function KpiCard({
-  label, value, chip, tone, compact, empty
+  label, value, chip, tone, compact, empty, onClick, active
 }: {
   label: string;
   value: string;
@@ -4076,9 +4213,24 @@ function KpiCard({
   tone: "green" | "red" | "orange" | "blue" | "purple";
   compact?: boolean;
   empty?: boolean;
+  onClick?: () => void;
+  active?: boolean;
 }) {
+  const isClickable = Boolean(onClick);
   return (
-    <div className={`card kpi-card ${compact ? "resource-kpi" : ""} ${empty ? "is-empty" : ""}`}>
+    <div
+      className={`card kpi-card ${compact ? "resource-kpi" : ""} ${empty ? "is-empty" : ""} ${isClickable ? "clickable-card" : ""} ${active ? "is-active" : ""}`}
+      onClick={onClick}
+      role={isClickable ? "button" : undefined}
+      tabIndex={isClickable ? 0 : undefined}
+      onKeyDown={(event) => {
+        if (!onClick) return;
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          onClick();
+        }
+      }}
+    >
       <div>
         <div className="kpi-label">{label}</div>
         <div className="kpi-value">{value}</div>
@@ -4136,11 +4288,14 @@ function EmptyState({ text }: { text: string }) {
   );
 }
 
-function CashHistory({ cash, onClose }: { cash: CashSnapshot[]; onClose: () => void }) {
+function CashHistory({ cash, onClose, onAddCash }: { cash: CashSnapshot[]; onClose: () => void; onAddCash: () => void }) {
   const items = [...cash].sort((a, b) => String(b.snapshot_month).localeCompare(String(a.snapshot_month)));
   return (
     <>
       <ModalHead title="입력한 현금 현황" desc="월별로 저장한 현재 현금과 자동 계산된 매출·지출·미수금·지급예정을 확인합니다." onClose={onClose} />
+      <div className="modal-inline-actions">
+        <button className="btn blue" type="button" onClick={onAddCash}>통장별 현금 입력</button>
+      </div>
       {items.length === 0 ? (
         <EmptyState text="아직 입력된 현금 현황이 없습니다." />
       ) : (

@@ -90,6 +90,17 @@ begin
     alter type public.business_category add value if not exists '연구';
     alter type public.business_category add value if not exists '개발';
     alter type public.business_category add value if not exists '기타';
+    alter type public.business_category add value if not exists '교육';
+    alter type public.business_category add value if not exists '문서작업';
+    alter type public.business_category add value if not exists '홈페이지';
+    alter type public.business_category add value if not exists '메타버스';
+    alter type public.business_category add value if not exists '마케팅';
+    alter type public.business_category add value if not exists '행사';
+    alter type public.business_category add value if not exists '전시';
+    alter type public.business_category add value if not exists '영상';
+    alter type public.business_category add value if not exists '제품 제작';
+    alter type public.business_category add value if not exists '디자인';
+    alter type public.business_category add value if not exists '광고/홍보';
   end if;
 end $$;
 

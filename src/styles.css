@@ -1608,6 +1608,221 @@ input:focus, select:focus, textarea:focus {
   letter-spacing: -0.03em;
 }
 
+.kpi-card.clickable-card {
+  border-color: rgba(16, 24, 40, 0.065);
+  outline: none;
+}
+
+.kpi-card.clickable-card:focus-visible {
+  box-shadow: 0 0 0 3px rgba(49, 130, 246, 0.18), var(--shadow);
+}
+
+.kpi-card.is-active {
+  border-color: rgba(49, 130, 246, 0.36);
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.98), rgba(239, 246, 255, 0.96));
+  box-shadow: 0 22px 60px rgba(49, 130, 246, 0.14);
+}
+
+.expense-detail-panel {
+  margin: -2px 0 22px;
+}
+
+.expense-detail-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 16px;
+  align-items: start;
+  margin-bottom: 18px;
+}
+
+.expense-detail-total {
+  min-width: 160px;
+  border-radius: 18px;
+  padding: 13px 15px;
+  text-align: right;
+  background: rgba(248, 250, 252, 0.95);
+  border: 1px solid rgba(16, 24, 40, 0.06);
+}
+
+.expense-detail-total span {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 680;
+  line-height: 1.35;
+}
+
+.expense-detail-total strong {
+  display: block;
+  margin-top: 5px;
+  color: var(--ink);
+  font-size: 22px;
+  line-height: 1.15;
+  font-weight: 760;
+  letter-spacing: 0;
+  white-space: nowrap;
+}
+
+.expense-detail-total.blue strong { color: #245fbe; }
+.expense-detail-total.red strong { color: #d94863; }
+.expense-detail-total.orange strong { color: #b86b12; }
+.expense-detail-total.green strong { color: #0b9467; }
+
+.expense-detail-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.35fr) minmax(260px, 0.65fr);
+  gap: 18px;
+  align-items: start;
+}
+
+.expense-detail-bars {
+  display: grid;
+  gap: 10px;
+}
+
+.expense-detail-row {
+  appearance: none;
+  border: 1px solid rgba(16, 24, 40, 0.06);
+  background: rgba(255, 255, 255, 0.86);
+  border-radius: 18px;
+  padding: 13px 14px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 14px;
+  align-items: center;
+  text-align: left;
+  cursor: pointer;
+}
+
+.expense-detail-row:hover {
+  border-color: rgba(49, 130, 246, 0.22);
+  background: rgba(248, 251, 255, 0.96);
+}
+
+.expense-detail-row-main {
+  min-width: 0;
+}
+
+.expense-detail-row strong {
+  display: block;
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 720;
+  line-height: 1.35;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.expense-detail-row span {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+  word-break: keep-all;
+}
+
+.expense-detail-row b {
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 760;
+  white-space: nowrap;
+}
+
+.expense-bar-track {
+  height: 8px;
+  margin-top: 9px;
+  border-radius: 999px;
+  background: rgba(16, 24, 40, 0.065);
+  overflow: hidden;
+}
+
+.expense-bar-fill {
+  height: 100%;
+  border-radius: inherit;
+}
+
+.expense-bar-fill.blue { background: linear-gradient(90deg, #3182f6, #6ca7ff); }
+.expense-bar-fill.red { background: linear-gradient(90deg, #f0506e, #ff8ea2); }
+.expense-bar-fill.orange { background: linear-gradient(90deg, #f59e0b, #ffc861); }
+.expense-bar-fill.green { background: linear-gradient(90deg, #12b981, #5adeb3); }
+
+.expense-breakdown {
+  display: grid;
+  gap: 9px;
+  border-radius: 20px;
+  padding: 16px;
+  background: rgba(248, 250, 252, 0.92);
+  border: 1px solid rgba(16, 24, 40, 0.06);
+}
+
+.expense-breakdown h3 {
+  margin: 0 0 4px;
+  color: var(--ink);
+  font-size: 14px;
+  line-height: 1.3;
+  font-weight: 740;
+  letter-spacing: 0;
+}
+
+.expense-breakdown-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 8px;
+  align-items: center;
+  color: var(--ink-2);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.expense-breakdown-row span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.expense-breakdown-row strong,
+.expense-breakdown-row em {
+  font-style: normal;
+  font-weight: 720;
+  white-space: nowrap;
+}
+
+.expense-breakdown-row em {
+  color: #315f9f;
+  border-radius: 999px;
+  padding: 3px 7px;
+  background: rgba(238, 245, 255, 0.9);
+}
+
+.modal-inline-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin: -6px 0 16px;
+  flex-wrap: wrap;
+}
+
+@media (max-width: 860px) {
+  .expense-detail-head,
+  .expense-detail-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .expense-detail-total {
+    text-align: left;
+  }
+
+  .expense-detail-row {
+    grid-template-columns: 1fr;
+  }
+
+  .expense-detail-row b {
+    justify-self: start;
+  }
+}
+
 /* 상태 태그 */
 .status-tag {
   display: inline-flex;
