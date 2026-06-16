@@ -2853,22 +2853,40 @@ function Compensation({
 
 function MarginCalculator() {
   const [mode, setMode] = useState<"lecture" | "project">("lecture");
+  const [paymentFlow, setPaymentFlow] = useState<"company" | "instructor">("company");
   const [vatMode, setVatMode] = useState("include");
   const [unitPrice, setUnitPrice] = useState("0");
   const [quantity, setQuantity] = useState("1");
   const [teacherFee, setTeacherFee] = useState("0");
+  const [instructorReceived, setInstructorReceived] = useState("0");
   const [fixedCost, setFixedCost] = useState("0");
   const [variableCost, setVariableCost] = useState("0");
   const [targetMargin, setTargetMargin] = useState("30");
+  const [proofInstitution, setProofInstitution] = useState(false);
+  const [proofCollection, setProofCollection] = useState(false);
+  const [proofReceipt, setProofReceipt] = useState(false);
 
-  const grossRevenue = parseNumber(unitPrice) * Math.max(1, parseNumber(quantity));
-  const netRevenue = vatMode === "include" ? Math.round(grossRevenue / 1.1) : grossRevenue;
-  const vat = vatMode === "include" ? grossRevenue - netRevenue : Math.round(grossRevenue * 0.1);
-  const totalCost = parseNumber(teacherFee) + parseNumber(fixedCost) + parseNumber(variableCost);
-  const profit = netRevenue - totalCost;
+  const count = Math.max(1, parseNumber(quantity));
+  const grossRevenue = parseNumber(unitPrice) * count;
+  const teacherNet = parseNumber(teacherFee);
+  const directInstructorGross = paymentFlow === "instructor" ? (parseNumber(instructorReceived) || grossRevenue) : 0;
+  const companyCollectionGross = paymentFlow === "instructor" ? Math.max(0, directInstructorGross - teacherNet) : grossRevenue;
+  const revenueBaseGross = paymentFlow === "instructor" ? companyCollectionGross : grossRevenue;
+  const netRevenue = vatMode === "include" ? Math.round(revenueBaseGross / 1.1) : revenueBaseGross;
+  const vat = vatMode === "include" ? revenueBaseGross - netRevenue : Math.round(revenueBaseGross * 0.1);
+  const fixed = parseNumber(fixedCost);
+  const variable = parseNumber(variableCost);
+  const companyCost = fixed + variable + (paymentFlow === "company" ? teacherNet : 0);
+  const fullProjectNetRevenue = vatMode === "include" ? Math.round(grossRevenue / 1.1) : grossRevenue;
+  const fullProjectCost = teacherNet + fixed + variable;
+  const fullProjectProfit = fullProjectNetRevenue - fullProjectCost;
+  const profit = netRevenue - companyCost;
   const margin = netRevenue ? Math.round((profit / netRevenue) * 1000) / 10 : 0;
   const targetCostLimit = Math.round(netRevenue * (1 - (Number(targetMargin) || 0) / 100));
   const gap = profit - Math.round(netRevenue * ((Number(targetMargin) || 0) / 100));
+  const instructorTaxableNet = paymentFlow === "instructor" ? Math.max(0, directInstructorGross - companyCollectionGross) : teacherNet;
+  const proofCount = [proofInstitution, proofCollection, proofReceipt].filter(Boolean).length;
+  const proofLabel = paymentFlow === "instructor" ? `${proofCount}/3 확인` : "일반 수금";
 
   return (
     <section className="section active">
@@ -2879,29 +2897,61 @@ function MarginCalculator() {
             <button className={mode === "project" ? "active" : ""} type="button" onClick={() => setMode("project")}>프로젝트</button>
           </div>
           <div className="modal-form margin-fields">
+            <label className="wide">기관 지급 흐름<select value={paymentFlow} onChange={(e) => setPaymentFlow(e.target.value as "company" | "instructor")}><option value="company">회사로 직접 입금</option><option value="instructor">강사가 먼저 받고 회사가 회수</option></select></label>
             <label>{mode === "lecture" ? "회당 수입" : "프로젝트 공급가"}<input value={unitPrice} onChange={(e) => setUnitPrice(formatMoneyInputValue(e.target.value))} inputMode="numeric" /></label>
             <label>{mode === "lecture" ? "회차" : "수량"}<input value={quantity} onChange={(e) => setQuantity(formatMoneyInputValue(e.target.value))} inputMode="numeric" /></label>
             <label>부가세<select value={vatMode} onChange={(e) => setVatMode(e.target.value)}><option value="include">부가세 포함</option><option value="exclude">부가세 별도</option></select></label>
             <label>목표 마진율(%)<input value={targetMargin} onChange={(e) => setTargetMargin(e.target.value.replace(/[^0-9.]/g, ""))} inputMode="decimal" /></label>
-            <label>강사비 합계<input value={teacherFee} onChange={(e) => setTeacherFee(formatMoneyInputValue(e.target.value))} inputMode="numeric" /></label>
+            {paymentFlow === "instructor" && (
+              <label>기관이 강사에게 입금한 금액<input value={instructorReceived} onChange={(e) => setInstructorReceived(formatMoneyInputValue(e.target.value))} inputMode="numeric" placeholder="총 입금액" /></label>
+            )}
+            <label>{paymentFlow === "instructor" ? "강사 실제 귀속액" : "강사비 합계"}<input value={teacherFee} onChange={(e) => setTeacherFee(formatMoneyInputValue(e.target.value))} inputMode="numeric" /></label>
             <label>고정비 합계<input value={fixedCost} onChange={(e) => setFixedCost(formatMoneyInputValue(e.target.value))} inputMode="numeric" /></label>
             <label className="wide">변동비 합계<input value={variableCost} onChange={(e) => setVariableCost(formatMoneyInputValue(e.target.value))} inputMode="numeric" /></label>
           </div>
+
+          {paymentFlow === "instructor" && (
+            <div className="settlement-card">
+              <div>
+                <h3>강사 직접수령 정산</h3>
+                <p>기관 입금액에서 강사 실제 귀속액을 뺀 금액을 회사가 회수하고, 그 회수액만큼 현금영수증 발행을 체크합니다.</p>
+              </div>
+              <div className="settlement-grid">
+                <Metric title="회사 회수 예정액" copy="강사 -> 회사 이체 요청" value={formatWon(companyCollectionGross)} />
+                <Metric title="현금영수증 발행액" copy="회사 수취분 기준" value={formatWon(companyCollectionGross)} />
+                <Metric title="강사 과세 기준 예상" copy="기관 입금 - 회사 회수" value={formatWon(instructorTaxableNet)} />
+                <Metric title="증빙 상태" copy="입금/이체/영수증" value={proofLabel} />
+              </div>
+              <div className="proof-checks">
+                <label className="check-label"><input type="checkbox" checked={proofInstitution} onChange={(e) => setProofInstitution(e.target.checked)} /><span>기관이 강사에게 입금한 캡처 확인</span></label>
+                <label className="check-label"><input type="checkbox" checked={proofCollection} onChange={(e) => setProofCollection(e.target.checked)} /><span>강사가 회사로 이체한 캡처 확인</span></label>
+                <label className="check-label"><input type="checkbox" checked={proofReceipt} onChange={(e) => setProofReceipt(e.target.checked)} /><span>현금영수증 발행 확인</span></label>
+              </div>
+            </div>
+          )}
         </div>
 
         <div className="card margin-result">
           <h2 className="card-title">결과</h2>
           <div className="proj-kpis">
-            <div className="proj-kpi green"><span>순매출</span><strong>{formatWon(netRevenue)}</strong></div>
-            <div className="proj-kpi red"><span>총 비용</span><strong>{formatWon(totalCost)}</strong></div>
+            <div className="proj-kpi green"><span>{paymentFlow === "instructor" ? "회사 회수 공급가액" : "순매출"}</span><strong>{formatWon(netRevenue)}</strong></div>
+            <div className="proj-kpi red"><span>회사 비용</span><strong>{formatWon(companyCost)}</strong></div>
             <div className="proj-kpi blue"><span>이익</span><strong>{formatWon(profit)}</strong></div>
             <div className="proj-kpi amber"><span>마진율</span><strong>{margin}%</strong></div>
           </div>
           <div className="calc-box">
-            <div className="calc-row"><span>받은 총액</span><strong>{formatWon(grossRevenue)}</strong></div>
+            <div className="calc-row"><span>전체 계약/수금 총액</span><strong>{formatWon(grossRevenue)}</strong></div>
+            {paymentFlow === "instructor" && <div className="calc-row"><span>강사 직접 수령액</span><strong>{formatWon(directInstructorGross)}</strong></div>}
+            {paymentFlow === "instructor" && <div className="calc-row"><span>회사 회수 총액</span><strong>{formatWon(companyCollectionGross)}</strong></div>}
             <div className="calc-row"><span>부가세</span><strong>{formatWon(vat)}</strong></div>
+            <div className="calc-row"><span>전체 프로젝트 참고 이익</span><strong>{formatWon(fullProjectProfit)}</strong></div>
             <div className="calc-row"><span>목표 비용 한도</span><strong>{formatWon(targetCostLimit)}</strong></div>
             <div className="calc-row total"><span>목표 대비</span><strong>{gap >= 0 ? `${formatWon(gap)} 여유` : `${formatWon(Math.abs(gap))} 부족`}</strong></div>
+          </div>
+          <div className="margin-note">
+            {paymentFlow === "instructor"
+              ? "강사가 먼저 받은 건은 회사가 실제 회수하는 금액을 마진 기준 수익으로 계산합니다. 기관 입금 캡처와 강사 이체 캡처를 받아 두고, 회사가 받은 금액만큼 현금영수증을 발행하도록 체크하세요."
+              : "회사로 직접 입금되는 건은 PDF 계산기처럼 받은 총액에서 부가세를 분리한 공급가액을 마진 기준 수익으로 계산합니다."}
           </div>
         </div>
       </div>
