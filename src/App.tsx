@@ -70,6 +70,22 @@ type ModalKey =
   | null;
 
 type Toast = { type: "ok" | "warn" | "err"; message: string } | null;
+type MarginDraft = {
+  mode: "lecture" | "project";
+  paymentFlow: "company" | "instructor";
+  vatMode: string;
+  unitPrice: string;
+  quantity: string;
+  teacherFee: string;
+  instructorReceived: string;
+  fixedCost: string;
+  variableCost: string;
+  targetMargin: string;
+  proofInstitution: boolean;
+  proofCollection: boolean;
+  proofReceipt: boolean;
+  savedAt?: string;
+};
 
 const sectionMeta: Record<SectionKey, { title: string; desc: string }> = {
   overview: {
@@ -196,6 +212,8 @@ const ranks: Rank[] = ["대표", "본부장", "책임", "선임", "매니저"];
 const bonusRateOptions = ["5%", "10%", "15%", "20%", "30%"];
 const raiseRateOptions = ["동결", "3%", "4%", "5%", "협의"];
 void raiseRateOptions;
+const marginMemoStart = "__LUPL_MARGIN_CALC_START__";
+const marginMemoEnd = "__LUPL_MARGIN_CALC_END__";
 
 function formatWon(value: number | null | undefined) {
   return `${Math.round(Number(value || 0)).toLocaleString("ko-KR")}원`;
@@ -402,8 +420,33 @@ function projectMemoValue(project: BusinessProject, label: string) {
   return readMemoField(project.memo, label);
 }
 
+function stripProjectMarginDraft(memo: string | null | undefined) {
+  const text = String(memo || "");
+  const start = text.indexOf(marginMemoStart);
+  const end = text.indexOf(marginMemoEnd);
+  if (start === -1 || end === -1 || end < start) return text;
+  return `${text.slice(0, start)}${text.slice(end + marginMemoEnd.length)}`.trim();
+}
+
+function getProjectMarginDraft(project: BusinessProject | null | undefined): MarginDraft | null {
+  const memo = String(project?.memo || "");
+  const start = memo.indexOf(marginMemoStart);
+  const end = memo.indexOf(marginMemoEnd);
+  if (start === -1 || end === -1 || end < start) return null;
+  try {
+    return JSON.parse(memo.slice(start + marginMemoStart.length, end).trim()) as MarginDraft;
+  } catch {
+    return null;
+  }
+}
+
+function setProjectMarginDraft(memo: string | null | undefined, draft: MarginDraft) {
+  const clean = stripProjectMarginDraft(memo);
+  return [clean, marginMemoStart, JSON.stringify(draft), marginMemoEnd].filter(Boolean).join("\n").trim();
+}
+
 function getProjectPlainMemo(project: BusinessProject) {
-  return String(project.memo || "")
+  return stripProjectMarginDraft(project.memo)
     .split("\n")
     .filter((line) => ![
       "프로젝트 분류:", "거래처/기관명:", "거래처 구분:", "상태:", "확정 금액:", "수령 금액:", "수기 비용:",
@@ -1109,6 +1152,15 @@ export default function App() {
       showToast(error instanceof Error ? error.message : "프로젝트 수정 실패", "err");
       throw error;
     }
+  }
+
+  async function saveProjectMarginDraft(projectId: string, draft: MarginDraft) {
+    const project = projects.find((item) => item.id === projectId);
+    if (!project) throw new Error("마진 계산을 저장할 프로젝트를 찾지 못했습니다.");
+    const nextMemo = setProjectMarginDraft(project.memo, draft);
+    setProjects((prev) => prev.map((item) => item.id === projectId ? { ...item, memo: nextMemo } : item));
+    const { error } = await updateWithHealing("business_projects", { memo: nextMemo }, "id", projectId);
+    if (error) throw toFriendlyDbError(error, "프로젝트별 마진 계산을 저장하지 못했습니다.");
   }
 
   async function completeProject(project: BusinessProject) {
@@ -2055,7 +2107,7 @@ export default function App() {
           />
         )}
         {section === "margin" && (
-          <MarginCalculator />
+          <MarginCalculator projects={projectsComputed} onSaveProjectMargin={saveProjectMarginDraft} />
         )}
         {section === "resource" && (
           <Resource
@@ -2851,7 +2903,14 @@ function Compensation({
   );
 }
 
-function MarginCalculator() {
+function MarginCalculator({
+  projects,
+  onSaveProjectMargin
+}: {
+  projects: ProjectComputed[];
+  onSaveProjectMargin: (projectId: string, draft: MarginDraft) => Promise<void>;
+}) {
+  const [selectedProjectId, setSelectedProjectId] = useState("");
   const [mode, setMode] = useState<"lecture" | "project">("lecture");
   const [paymentFlow, setPaymentFlow] = useState<"company" | "instructor">("company");
   const [vatMode, setVatMode] = useState("include");
@@ -2865,7 +2924,10 @@ function MarginCalculator() {
   const [proofInstitution, setProofInstitution] = useState(false);
   const [proofCollection, setProofCollection] = useState(false);
   const [proofReceipt, setProofReceipt] = useState(false);
+  const [saveState, setSaveState] = useState("프로젝트 선택 시 자동 저장");
+  const loadingDraftRef = useRef(false);
 
+  const selectedProject = projects.find((project) => project.id === selectedProjectId) || null;
   const count = Math.max(1, parseNumber(quantity));
   const grossRevenue = parseNumber(unitPrice) * count;
   const teacherNet = parseNumber(teacherFee);
@@ -2882,76 +2944,225 @@ function MarginCalculator() {
   const fullProjectProfit = fullProjectNetRevenue - fullProjectCost;
   const profit = netRevenue - companyCost;
   const margin = netRevenue ? Math.round((profit / netRevenue) * 1000) / 10 : 0;
-  const targetCostLimit = Math.round(netRevenue * (1 - (Number(targetMargin) || 0) / 100));
-  const gap = profit - Math.round(netRevenue * ((Number(targetMargin) || 0) / 100));
+  const targetMarginNumber = Number(targetMargin) || 0;
+  const targetCostLimit = Math.round(netRevenue * (1 - targetMarginNumber / 100));
+  const targetProfit = Math.round(netRevenue * (targetMarginNumber / 100));
+  const gap = profit - targetProfit;
+  const targetGapPercent = Math.round((margin - targetMarginNumber) * 10) / 10;
   const instructorTaxableNet = paymentFlow === "instructor" ? Math.max(0, directInstructorGross - companyCollectionGross) : teacherNet;
   const proofCount = [proofInstitution, proofCollection, proofReceipt].filter(Boolean).length;
   const proofLabel = paymentFlow === "instructor" ? `${proofCount}/3 확인` : "일반 수금";
+  const compositionRows = [
+    { label: "강사비", amount: teacherNet, tone: "teacher" },
+    { label: "고정비", amount: fixed, tone: "fixed" },
+    { label: "변동비", amount: variable, tone: "variable" },
+    { label: "이익", amount: fullProjectProfit, tone: fullProjectProfit >= 0 ? "profit" : "loss" }
+  ];
+  const compositionTotal = compositionRows.reduce((sum, row) => sum + Math.max(0, row.amount), 0) || 1;
+  const marginDraft = useMemo<MarginDraft>(() => ({
+    mode,
+    paymentFlow,
+    vatMode,
+    unitPrice,
+    quantity,
+    teacherFee,
+    instructorReceived,
+    fixedCost,
+    variableCost,
+    targetMargin,
+    proofInstitution,
+    proofCollection,
+    proofReceipt
+  }), [mode, paymentFlow, vatMode, unitPrice, quantity, teacherFee, instructorReceived, fixedCost, variableCost, targetMargin, proofInstitution, proofCollection, proofReceipt]);
+
+  useEffect(() => {
+    if (!selectedProjectId && projects.length > 0) setSelectedProjectId(projects[0].id);
+  }, [projects, selectedProjectId]);
+
+  useEffect(() => {
+    const project = projects.find((item) => item.id === selectedProjectId);
+    if (!project) return;
+    const saved = getProjectMarginDraft(project);
+    loadingDraftRef.current = true;
+    setMode(saved?.mode || "lecture");
+    setPaymentFlow(saved?.paymentFlow || "company");
+    setVatMode(saved?.vatMode || "include");
+    setUnitPrice(saved?.unitPrice || formatMoneyInputValue(String(project._revenue || project.confirmed_amount || 0)));
+    setQuantity(saved?.quantity || "1");
+    setTeacherFee(saved?.teacherFee || "0");
+    setInstructorReceived(saved?.instructorReceived || "");
+    setFixedCost(saved?.fixedCost || formatMoneyInputValue(String(project._autoCost || project._cost || 0)));
+    setVariableCost(saved?.variableCost || "0");
+    setTargetMargin(saved?.targetMargin || "30");
+    setProofInstitution(Boolean(saved?.proofInstitution));
+    setProofCollection(Boolean(saved?.proofCollection));
+    setProofReceipt(Boolean(saved?.proofReceipt));
+    setSaveState(saved?.savedAt ? `저장됨 ${formatDateTime(saved.savedAt)}` : "새 계산 자동 저장 준비");
+    window.setTimeout(() => { loadingDraftRef.current = false; }, 0);
+  }, [selectedProjectId]);
+
+  useEffect(() => {
+    if (!selectedProjectId) {
+      setSaveState("프로젝트 선택 시 자동 저장");
+      return;
+    }
+    if (loadingDraftRef.current) return;
+    setSaveState("저장 중");
+    const timer = window.setTimeout(async () => {
+      try {
+        const draft = { ...marginDraft, savedAt: new Date().toISOString() };
+        await onSaveProjectMargin(selectedProjectId, draft);
+        setSaveState(`자동 저장됨 ${formatDateTime(draft.savedAt)}`);
+      } catch (error) {
+        console.warn("margin autosave failed", error);
+        setSaveState("저장 실패");
+      }
+    }, 800);
+    return () => window.clearTimeout(timer);
+  }, [selectedProjectId, marginDraft]);
 
   return (
     <section className="section active">
-      <div className="margin-shell">
-        <div className="card solid margin-form">
-          <div className="segmented">
-            <button className={mode === "lecture" ? "active" : ""} type="button" onClick={() => setMode("lecture")}>강의</button>
-            <button className={mode === "project" ? "active" : ""} type="button" onClick={() => setMode("project")}>프로젝트</button>
-          </div>
-          <div className="modal-form margin-fields">
-            <label className="wide">기관 지급 흐름<select value={paymentFlow} onChange={(e) => setPaymentFlow(e.target.value as "company" | "instructor")}><option value="company">회사로 직접 입금</option><option value="instructor">강사가 먼저 받고 회사가 회수</option></select></label>
-            <label>{mode === "lecture" ? "회당 수입" : "프로젝트 공급가"}<input value={unitPrice} onChange={(e) => setUnitPrice(formatMoneyInputValue(e.target.value))} inputMode="numeric" /></label>
-            <label>{mode === "lecture" ? "회차" : "수량"}<input value={quantity} onChange={(e) => setQuantity(formatMoneyInputValue(e.target.value))} inputMode="numeric" /></label>
-            <label>부가세<select value={vatMode} onChange={(e) => setVatMode(e.target.value)}><option value="include">부가세 포함</option><option value="exclude">부가세 별도</option></select></label>
-            <label>목표 마진율(%)<input value={targetMargin} onChange={(e) => setTargetMargin(e.target.value.replace(/[^0-9.]/g, ""))} inputMode="decimal" /></label>
-            {paymentFlow === "instructor" && (
-              <label>기관이 강사에게 입금한 금액<input value={instructorReceived} onChange={(e) => setInstructorReceived(formatMoneyInputValue(e.target.value))} inputMode="numeric" placeholder="총 입금액" /></label>
-            )}
-            <label>{paymentFlow === "instructor" ? "강사 실제 귀속액" : "강사비 합계"}<input value={teacherFee} onChange={(e) => setTeacherFee(formatMoneyInputValue(e.target.value))} inputMode="numeric" /></label>
-            <label>고정비 합계<input value={fixedCost} onChange={(e) => setFixedCost(formatMoneyInputValue(e.target.value))} inputMode="numeric" /></label>
-            <label className="wide">변동비 합계<input value={variableCost} onChange={(e) => setVariableCost(formatMoneyInputValue(e.target.value))} inputMode="numeric" /></label>
+      <div className="card solid margin-basic">
+        <div>
+          <h2 className="card-title">기본 정보</h2>
+          <p className="card-sub">프로젝트를 선택하면 계산값이 해당 프로젝트에 실시간 저장됩니다.</p>
+        </div>
+        <div className="margin-basic-grid">
+          <label>프로젝트
+            <select value={selectedProjectId} onChange={(e) => setSelectedProjectId(e.target.value)}>
+              <option value="">프로젝트 선택</option>
+              {projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}
+            </select>
+          </label>
+          <label>기관 유형<input readOnly value={selectedProject?.client_type || "-"} /></label>
+          <label>목표 마진율 (%)<input value={targetMargin} onChange={(e) => setTargetMargin(e.target.value.replace(/[^0-9.]/g, ""))} inputMode="decimal" /></label>
+          <div className="save-state"><span>{saveState}</span></div>
+        </div>
+        <div className="segmented">
+          <button className={mode === "lecture" ? "active" : ""} type="button" onClick={() => setMode("lecture")}>강의</button>
+          <button className={mode === "project" ? "active" : ""} type="button" onClick={() => setMode("project")}>프로젝트</button>
+        </div>
+      </div>
+
+      <div className="margin-pdf-layout">
+        <div className="margin-column">
+          <div className="card margin-section">
+            <h2 className="card-title">수입 구성</h2>
+            <p className="card-sub">PDF의 받은 총액, 공급가액, 부가세 항목입니다.</p>
+            <div className="modal-form margin-fields">
+              <label>{mode === "lecture" ? "회당 수금단가" : "프로젝트 수금액"}<input value={unitPrice} onChange={(e) => setUnitPrice(formatMoneyInputValue(e.target.value))} inputMode="numeric" /></label>
+              <label>{mode === "lecture" ? "회차" : "수량"}<input value={quantity} onChange={(e) => setQuantity(formatMoneyInputValue(e.target.value))} inputMode="numeric" /></label>
+              <label>부가세 처리<select value={vatMode} onChange={(e) => setVatMode(e.target.value)}><option value="include">부가세 포함</option><option value="exclude">부가세 별도</option></select></label>
+            </div>
+            <div className="calc-box mt-sm">
+              <div className="calc-row"><span>받은 총액</span><strong>{formatWon(grossRevenue)}</strong></div>
+              <div className="calc-row"><span>공급가액(마진 기준)</span><strong>{formatWon(fullProjectNetRevenue)}</strong></div>
+              <div className="calc-row"><span>부가세(납부할 금액)</span><strong>{formatWon(vatMode === "include" ? grossRevenue - fullProjectNetRevenue : Math.round(grossRevenue * 0.1))}</strong></div>
+            </div>
           </div>
 
-          {paymentFlow === "instructor" && (
-            <div className="settlement-card">
-              <div>
-                <h3>강사 직접수령 정산</h3>
-                <p>기관 입금액에서 강사 실제 귀속액을 뺀 금액을 회사가 회수하고, 그 회수액만큼 현금영수증 발행을 체크합니다.</p>
-              </div>
-              <div className="settlement-grid">
-                <Metric title="회사 회수 예정액" copy="강사 -> 회사 이체 요청" value={formatWon(companyCollectionGross)} />
-                <Metric title="현금영수증 발행액" copy="회사 수취분 기준" value={formatWon(companyCollectionGross)} />
-                <Metric title="강사 과세 기준 예상" copy="기관 입금 - 회사 회수" value={formatWon(instructorTaxableNet)} />
-                <Metric title="증빙 상태" copy="입금/이체/영수증" value={proofLabel} />
-              </div>
-              <div className="proof-checks">
-                <label className="check-label"><input type="checkbox" checked={proofInstitution} onChange={(e) => setProofInstitution(e.target.checked)} /><span>기관이 강사에게 입금한 캡처 확인</span></label>
-                <label className="check-label"><input type="checkbox" checked={proofCollection} onChange={(e) => setProofCollection(e.target.checked)} /><span>강사가 회사로 이체한 캡처 확인</span></label>
-                <label className="check-label"><input type="checkbox" checked={proofReceipt} onChange={(e) => setProofReceipt(e.target.checked)} /><span>현금영수증 발행 확인</span></label>
-              </div>
+          <div className="card margin-section">
+            <h2 className="card-title">강사</h2>
+            <p className="card-sub">강사비와 기관 지급 흐름을 정리합니다.</p>
+            <div className="modal-form margin-fields">
+              <label className="wide">기관 지급 흐름<select value={paymentFlow} onChange={(e) => setPaymentFlow(e.target.value as "company" | "instructor")}><option value="company">회사로 직접 입금</option><option value="instructor">강사가 먼저 받고 회사가 회수</option></select></label>
+              {paymentFlow === "instructor" && (
+                <label>기관이 강사에게 입금한 금액<input value={instructorReceived} onChange={(e) => setInstructorReceived(formatMoneyInputValue(e.target.value))} inputMode="numeric" placeholder="총 입금액" /></label>
+              )}
+              <label>{paymentFlow === "instructor" ? "강사 실제 귀속액" : "강사비 합계"}<input value={teacherFee} onChange={(e) => setTeacherFee(formatMoneyInputValue(e.target.value))} inputMode="numeric" /></label>
             </div>
-          )}
+            {paymentFlow === "instructor" && (
+              <div className="settlement-card">
+                <div>
+                  <h3>강사 직접수령 정산</h3>
+                  <p>기관 입금액에서 강사 실제 귀속액을 뺀 금액을 회사가 회수하고, 그 회수액만큼 현금영수증 발행을 체크합니다.</p>
+                </div>
+                <div className="settlement-grid">
+                  <Metric title="회사 회수 예정액" copy="강사 -> 회사 이체 요청" value={formatWon(companyCollectionGross)} />
+                  <Metric title="현금영수증 발행액" copy="회사 수취분 기준" value={formatWon(companyCollectionGross)} />
+                  <Metric title="강사 과세 기준 예상" copy="기관 입금 - 회사 회수" value={formatWon(instructorTaxableNet)} />
+                  <Metric title="증빙 상태" copy="입금/이체/영수증" value={proofLabel} />
+                </div>
+                <div className="proof-checks">
+                  <label className="check-label"><input type="checkbox" checked={proofInstitution} onChange={(e) => setProofInstitution(e.target.checked)} /><span>기관이 강사에게 입금한 캡처 확인</span></label>
+                  <label className="check-label"><input type="checkbox" checked={proofCollection} onChange={(e) => setProofCollection(e.target.checked)} /><span>강사가 회사로 이체한 캡처 확인</span></label>
+                  <label className="check-label"><input type="checkbox" checked={proofReceipt} onChange={(e) => setProofReceipt(e.target.checked)} /><span>현금영수증 발행 확인</span></label>
+                </div>
+              </div>
+            )}
+          </div>
+
+          <div className="grid two margin-cost-grid">
+            <div className="card margin-section">
+              <h2 className="card-title">고정비</h2>
+              <p className="card-sub">기획·제작처럼 한 번 드는 비용입니다.</p>
+              <label className="single-field">합계<input value={fixedCost} onChange={(e) => setFixedCost(formatMoneyInputValue(e.target.value))} inputMode="numeric" /></label>
+            </div>
+            <div className="card margin-section">
+              <h2 className="card-title">변동비</h2>
+              <p className="card-sub">교통비·재료비처럼 횟수에 따라 반복되는 비용입니다.</p>
+              <label className="single-field">합계<input value={variableCost} onChange={(e) => setVariableCost(formatMoneyInputValue(e.target.value))} inputMode="numeric" /></label>
+            </div>
+          </div>
         </div>
 
-        <div className="card margin-result">
-          <h2 className="card-title">결과</h2>
-          <div className="proj-kpis">
-            <div className="proj-kpi green"><span>{paymentFlow === "instructor" ? "회사 회수 공급가액" : "순매출"}</span><strong>{formatWon(netRevenue)}</strong></div>
-            <div className="proj-kpi red"><span>회사 비용</span><strong>{formatWon(companyCost)}</strong></div>
-            <div className="proj-kpi blue"><span>이익</span><strong>{formatWon(profit)}</strong></div>
-            <div className="proj-kpi amber"><span>마진율</span><strong>{margin}%</strong></div>
-          </div>
-          <div className="calc-box">
-            <div className="calc-row"><span>전체 계약/수금 총액</span><strong>{formatWon(grossRevenue)}</strong></div>
-            {paymentFlow === "instructor" && <div className="calc-row"><span>강사 직접 수령액</span><strong>{formatWon(directInstructorGross)}</strong></div>}
-            {paymentFlow === "instructor" && <div className="calc-row"><span>회사 회수 총액</span><strong>{formatWon(companyCollectionGross)}</strong></div>}
-            <div className="calc-row"><span>부가세</span><strong>{formatWon(vat)}</strong></div>
-            <div className="calc-row"><span>전체 프로젝트 참고 이익</span><strong>{formatWon(fullProjectProfit)}</strong></div>
-            <div className="calc-row"><span>목표 비용 한도</span><strong>{formatWon(targetCostLimit)}</strong></div>
-            <div className="calc-row total"><span>목표 대비</span><strong>{gap >= 0 ? `${formatWon(gap)} 여유` : `${formatWon(Math.abs(gap))} 부족`}</strong></div>
-          </div>
-          <div className="margin-note">
-            {paymentFlow === "instructor"
-              ? "강사가 먼저 받은 건은 회사가 실제 회수하는 금액을 마진 기준 수익으로 계산합니다. 기관 입금 캡처와 강사 이체 캡처를 받아 두고, 회사가 받은 금액만큼 현금영수증을 발행하도록 체크하세요."
-              : "회사로 직접 입금되는 건은 PDF 계산기처럼 받은 총액에서 부가세를 분리한 공급가액을 마진 기준 수익으로 계산합니다."}
+        <div className="margin-column">
+          <div className="card margin-result">
+            <h2 className="card-title">결과</h2>
+            <p className="card-sub">PDF 결과 영역처럼 이익, 마진율, 목표 대비를 바로 봅니다.</p>
+            <div className="proj-kpis">
+              <div className="proj-kpi green"><span>{paymentFlow === "instructor" ? "회사 회수 공급가액" : "순매출"}</span><strong>{formatWon(netRevenue)}</strong></div>
+              <div className="proj-kpi blue"><span>이익</span><strong>{formatWon(profit)}</strong></div>
+              <div className="proj-kpi red"><span>마진율</span><strong>{margin}%</strong></div>
+              <div className="proj-kpi amber"><span>목표 대비</span><strong>{targetGapPercent >= 0 ? `+${targetGapPercent}%p` : `${targetGapPercent}%p`}</strong></div>
+            </div>
+            <div className="margin-infographic">
+              <h3>비용·이익 인포그래픽</h3>
+              <div className="margin-stack">
+                {compositionRows.map((row) => (
+                  <span
+                    key={row.label}
+                    className={`margin-stack-segment ${row.tone}`}
+                    style={{ width: `${Math.max(row.amount > 0 ? 8 : 0, Math.round((Math.max(0, row.amount) / compositionTotal) * 100))}%` }}
+                    title={`${row.label}: ${formatWon(row.amount)}`}
+                  />
+                ))}
+              </div>
+              <div className="margin-legend">
+                {compositionRows.map((row) => {
+                  const percent = fullProjectNetRevenue ? Math.round((row.amount / fullProjectNetRevenue) * 100) : 0;
+                  return (
+                    <div className="margin-legend-row" key={row.label}>
+                      <span><i className={row.tone} />{row.label}</span>
+                      <strong>{formatWon(row.amount)}</strong>
+                      <em>{percent}%</em>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+            <div className="calc-box">
+              <div className="calc-row"><span>강사비 합계</span><strong>{formatWon(teacherNet)}</strong></div>
+              <div className="calc-row"><span>고정비 합계</span><strong>{formatWon(fixed)}</strong></div>
+              <div className="calc-row"><span>변동비 합계</span><strong>{formatWon(variable)}</strong></div>
+              <div className="calc-row"><span>총 비용 합계</span><strong>{formatWon(fullProjectCost)}</strong></div>
+              <div className="calc-row"><span>마진율</span><strong>{margin}%</strong></div>
+              <div className="calc-row"><span>목표 비용 한도</span><strong>{formatWon(targetCostLimit)}</strong></div>
+              <div className="calc-row total"><span>목표 대비</span><strong>{gap >= 0 ? `${formatWon(gap)} 여유` : `${formatWon(Math.abs(gap))} 부족`}</strong></div>
+            </div>
+            <div className="calc-box mt-sm">
+              <div className="calc-row"><span>받은 총액</span><strong>{formatWon(grossRevenue)}</strong></div>
+              {paymentFlow === "instructor" && <div className="calc-row"><span>강사 직접 수령액</span><strong>{formatWon(directInstructorGross)}</strong></div>}
+              {paymentFlow === "instructor" && <div className="calc-row"><span>회사 회수 총액</span><strong>{formatWon(companyCollectionGross)}</strong></div>}
+              <div className="calc-row"><span>공급가액(마진 기준)</span><strong>{formatWon(netRevenue)}</strong></div>
+              <div className="calc-row"><span>부가세</span><strong>{formatWon(vat)}</strong></div>
+            </div>
+            <div className="margin-note">
+              {paymentFlow === "instructor"
+                ? "강사가 먼저 받은 건은 회사가 실제 회수하는 금액을 마진 기준 수익으로 계산합니다. 기관 입금 캡처와 강사 이체 캡처를 받아 두고, 회사가 받은 금액만큼 현금영수증을 발행하도록 체크하세요."
+                : "회사로 직접 입금되는 건은 PDF 계산기처럼 받은 총액에서 부가세를 분리한 공급가액을 마진 기준 수익으로 계산합니다."}
+            </div>
           </div>
         </div>
       </div>
