@@ -694,6 +694,16 @@ button { -webkit-tap-highlight-color: transparent; }
   border-color: rgba(91, 141, 239, 0.18);
 }
 
+.salary-total-stack {
+  display: grid;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.salary-total-stack .point-card {
+  margin-top: 0;
+}
+
 .point-title {
   font-size: 17px;
   font-weight: 730;
@@ -1897,6 +1907,51 @@ input:focus, select:focus, textarea:focus {
   background: rgba(238, 245, 255, 0.9);
 }
 
+.recurring-strip-list {
+  display: grid;
+  gap: 9px;
+}
+
+.recurring-strip {
+  border: 1px solid rgba(16, 24, 40, 0.06);
+  border-radius: 16px;
+  padding: 12px 14px;
+  display: grid;
+  grid-template-columns: minmax(160px, 1.3fr) minmax(110px, 0.8fr) minmax(150px, 1fr) minmax(70px, 0.5fr) auto;
+  gap: 12px;
+  align-items: center;
+  text-align: left;
+  background: rgba(255, 255, 255, 0.9);
+  color: var(--ink-2);
+  cursor: pointer;
+}
+
+.recurring-strip:hover {
+  border-color: rgba(49, 130, 246, 0.22);
+  background: rgba(248, 251, 255, 0.96);
+}
+
+.recurring-strip span,
+.recurring-strip strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.recurring-strip .recurring-purpose,
+.recurring-strip strong {
+  color: var(--ink);
+  font-weight: 760;
+}
+
+.recurring-strip.tone-0 { border-left: 5px solid #3182f6; }
+.recurring-strip.tone-1 { border-left: 5px solid #15c47e; }
+.recurring-strip.tone-2 { border-left: 5px solid #f59e0b; }
+.recurring-strip.tone-3 { border-left: 5px solid #f0506e; }
+
 .modal-inline-actions {
   display: flex;
   justify-content: flex-end;
@@ -1921,6 +1976,10 @@ input:focus, select:focus, textarea:focus {
 
   .expense-detail-row b {
     justify-self: start;
+  }
+
+  .recurring-strip {
+    grid-template-columns: 1fr;
   }
 }
 

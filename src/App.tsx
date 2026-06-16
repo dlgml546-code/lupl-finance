@@ -319,6 +319,91 @@ function isMonthlyRecurringExpense(expense: ExpenseRequest) {
   return !expense.recurring_cycle || expense.recurring_cycle === "매월" || expense.memo?.includes("매월") || expense.review_reason?.includes("매월");
 }
 
+function readMemoField(memo: string | null | undefined, label: string) {
+  const line = String(memo || "").split("\n").find((item) => item.trim().startsWith(`${label}:`));
+  return line ? line.slice(label.length + 1).trim() : "";
+}
+
+function getExpenseUsageLabel(expense: Pick<ExpenseRequest, "usage" | "memo" | "is_recurring" | "recurring_cycle" | "evidence_status" | "review_reason" | "purpose">) {
+  const memoUsage = readMemoField(expense.memo, "정기지출 대분류") || readMemoField(expense.memo, "사용용도");
+  const raw = String(expense.usage || "").trim();
+  if (raw && raw !== "미분류") return raw;
+  if (memoUsage) return memoUsage;
+  return isRecurringExpense(expense) ? "운영비" : "미분류";
+}
+
+function getExpensePaymentLabel(expense: ExpenseRequest, cards: PaymentCard[]) {
+  const cardLabel = cards.find((card) => card.id === expense.card_id)?.label
+    || readMemoField(expense.memo, "결제카드")
+    || (isRecurringExpense(expense) ? cards.find((card) => card.card_type === "개인")?.label : "");
+  const method = expense.payment_method || readMemoField(expense.memo, "결제방식") || (cardLabel ? "카드" : "-");
+  return `${method}${cardLabel ? ` (${cardLabel})` : ""}`;
+}
+
+function getExpenseCycleLabel(expense: ExpenseRequest) {
+  return expense.recurring_cycle || readMemoField(expense.memo, "반복주기") || (isRecurringExpense(expense) ? "매월" : "-");
+}
+
+function buildProjectMemoLines(payload: {
+  categoryMemo: string;
+  clientName: string;
+  clientType: string;
+  status: string;
+  confirmedAmount: number;
+  receivedAmount: number;
+  manualCost: number;
+  ownerLabel: string;
+  operatorLabel: string;
+  contact: string;
+  inflowRoute: string;
+  receiptStatus: string;
+  paymentDueDate: string;
+  dueDate: string;
+  taxInvoiceDate: string;
+  repeatClient: boolean;
+  monthlyPaymentMemo: string;
+  plainMemo: string;
+}) {
+  return [
+    payload.categoryMemo,
+    payload.clientName ? `거래처/기관명: ${payload.clientName}` : "",
+    payload.clientType ? `거래처 구분: ${payload.clientType}` : "",
+    payload.status ? `상태: ${payload.status}` : "",
+    `확정 금액: ${formatWon(payload.confirmedAmount)}`,
+    `수령 금액: ${formatWon(payload.receivedAmount)}`,
+    payload.manualCost ? `수기 비용: ${formatWon(payload.manualCost)}` : "",
+    payload.ownerLabel ? `책임자: ${payload.ownerLabel}` : "",
+    payload.operatorLabel ? `실무 담당자: ${payload.operatorLabel}` : "",
+    payload.contact ? `실무 담당자 연락처: ${payload.contact}` : "",
+    payload.inflowRoute ? `유입 경로: ${payload.inflowRoute}` : "",
+    payload.receiptStatus ? `대금 수령 상태: ${payload.receiptStatus}` : "",
+    payload.paymentDueDate ? `입금 예정일: ${payload.paymentDueDate}` : "",
+    payload.dueDate ? `마감 날짜: ${payload.dueDate}` : "",
+    payload.taxInvoiceDate ? `세금계산서 발행일: ${payload.taxInvoiceDate}` : "",
+    `반복 가능 고객: ${payload.repeatClient ? "예" : "아니오"}`,
+    payload.monthlyPaymentMemo,
+    payload.plainMemo
+  ].filter(Boolean).join("\n");
+}
+
+function projectMemoValue(project: BusinessProject, label: string) {
+  return readMemoField(project.memo, label);
+}
+
+function getProjectCategoryLabel(project: BusinessProject) {
+  if (project.project_major_category || project.project_middle_category || project.project_small_category) {
+    return [project.project_major_category, project.project_middle_category, project.project_small_category].filter(Boolean).join(" > ");
+  }
+  if (project.project_group?.length) return project.project_group.join(" > ");
+  return projectMemoValue(project, "프로젝트 분류") || "-";
+}
+
+function getProjectNumber(project: BusinessProject, fieldValue: number | null | undefined, memoLabel: string) {
+  const direct = Number(fieldValue || 0);
+  if (direct) return direct;
+  return Number(projectMemoValue(project, memoLabel).replace(/[^0-9.-]/g, "")) || 0;
+}
+
 function isVisibleCashSnapshot(snapshot: CashSnapshot) {
   const month = String(snapshot.snapshot_month || "");
   const looksLikeSeed = Number(snapshot.current_cash || 0) === 50000000 && Number(snapshot.revenue || 0) === 5000000 && Number(snapshot.expense || 0) === 4200000;
@@ -527,12 +612,14 @@ export default function App() {
   const projectsComputed = useMemo(() => {
     return projects.map((p) => {
       const autoCost = projectCostMap.get(p.id) || 0;
-      const cost = Number(p.cost || 0) + autoCost;
-      const revenue = Number(p.confirmed_amount || 0);
+      const manualCost = getProjectNumber(p, p.cost, "수기 비용");
+      const cost = manualCost + autoCost;
+      const revenue = getProjectNumber(p, p.confirmed_amount, "확정 금액");
+      const received = getProjectNumber(p, p.received_amount, "수령 금액");
       const profit = revenue - cost;
       const marginRate = revenue > 0 ? profit / revenue : 0;
-      const receivable = Math.max(0, revenue - Number(p.received_amount || 0));
-      return { ...p, _cost: cost, _autoCost: autoCost, _revenue: revenue, _profit: profit, _marginRate: marginRate, _receivable: receivable };
+      const receivable = Math.max(0, revenue - received);
+      return { ...p, received_amount: received, _cost: cost, _autoCost: autoCost, _revenue: revenue, _profit: profit, _marginRate: marginRate, _receivable: receivable };
     });
   }, [projects, projectCostMap]);
 
@@ -740,33 +827,67 @@ export default function App() {
       const monthlyPaymentMemo = String(formData.get("payment_due_cycle") || "") === "monthly" ? "입금 예정: 매월 반복" : "";
       const plainMemo = String(formData.get("memo") || "");
       const categoryMemo = groups.length ? `프로젝트 분류: ${groups.join(" > ")}` : "";
+      const confirmedAmount = parseNumber(formData.get("confirmed_amount"));
+      const receivedAmount = parseNumber(formData.get("received_amount"));
+      const clientName = String(formData.get("client_name") || "") || "";
+      const clientType = String(formData.get("client_type") || "") || "";
+      const status = String(formData.get("status") || "접수") as ProjectStatus;
+      const receiptStatus = String(formData.get("receipt_status") || "미청구") || "";
+      const ownerLabel = String(formData.get("owner_label") || "") || "";
+      const operatorLabel = String(formData.get("operator_label") || "") || "";
+      const contact = [
+        String(formData.get("client_contact_name") || ""),
+        String(formData.get("client_contact_phone") || "")
+      ].filter(Boolean).join(" / ") || String(formData.get("contact") || "");
+      const inflowRoute = String(formData.get("inflow_route") || "") || "";
+      const paymentDueDate = String(formData.get("payment_due_date") || "") || "";
+      const dueDate = String(formData.get("due_date") || "") || "";
+      const taxInvoiceDate = String(formData.get("tax_invoice_date") || "") || "";
+      const repeatClient = formData.get("repeat_client") === "on";
+      const projectMemo = buildProjectMemoLines({
+        categoryMemo,
+        clientName,
+        clientType,
+        status,
+        confirmedAmount,
+        receivedAmount,
+        manualCost: 0,
+        ownerLabel,
+        operatorLabel,
+        contact,
+        inflowRoute,
+        receiptStatus,
+        paymentDueDate,
+        dueDate,
+        taxInvoiceDate,
+        repeatClient,
+        monthlyPaymentMemo,
+        plainMemo
+      });
       const payload = {
         name: String(formData.get("name") || ""),
         category: legacyCategory,
-        client_type: (String(formData.get("client_type") || "") || null) as ClientType | null,
+        client_type: (clientType || null) as ClientType | null,
         project_major_category: major || null,
         project_middle_category: middle || null,
         project_small_category: small || null,
         project_group: groups.length ? groups : null,
-        client_name: String(formData.get("client_name") || "") || null,
-        status: String(formData.get("status") || "접수") as ProjectStatus,
-        confirmed_amount: parseNumber(formData.get("confirmed_amount")),
-        received_amount: parseNumber(formData.get("received_amount")),
+        client_name: clientName || null,
+        status,
+        confirmed_amount: confirmedAmount,
+        received_amount: receivedAmount,
         cost: 0,
-        receipt_status: (String(formData.get("receipt_status") || "미청구") || null) as ReceiptStatus | null,
-        owner_label: String(formData.get("owner_label") || "") || null,
-        operator_label: String(formData.get("operator_label") || "") || null,
-        contact: [
-          String(formData.get("client_contact_name") || ""),
-          String(formData.get("client_contact_phone") || "")
-        ].filter(Boolean).join(" / ") || String(formData.get("contact") || "") || null,
-        inflow_route: String(formData.get("inflow_route") || "") || null,
-        payment_due_date: String(formData.get("payment_due_date") || "") || null,
-        due_date: String(formData.get("due_date") || "") || null,
-        tax_invoice_date: String(formData.get("tax_invoice_date") || "") || null,
-        repeat_client: formData.get("repeat_client") === "on",
+        receipt_status: (receiptStatus || null) as ReceiptStatus | null,
+        owner_label: ownerLabel || null,
+        operator_label: operatorLabel || null,
+        contact: contact || null,
+        inflow_route: inflowRoute || null,
+        payment_due_date: paymentDueDate || null,
+        due_date: dueDate || null,
+        tax_invoice_date: taxInvoiceDate || null,
+        repeat_client: repeatClient,
         owner_id: currentPerson?.id || null,
-        memo: [categoryMemo, monthlyPaymentMemo, plainMemo].filter(Boolean).join("\n")
+        memo: projectMemo
       };
 
       // 스키마 드리프트(배포 테이블에 일부 컬럼이 없음)에도 등록이 막히지 않도록 공통 저장 함수 사용.
@@ -786,7 +907,18 @@ export default function App() {
               project_middle_category: categoryMemo,
               project_small_category: categoryMemo,
               project_group: categoryMemo,
-              operator_label: `우리 팀 실무 담당자: ${payload.operator_label || "-"}`
+              client_name: `거래처/기관명: ${clientName}`,
+              client_type: `거래처 구분: ${clientType}`,
+              confirmed_amount: `확정 금액: ${formatWon(confirmedAmount)}`,
+              received_amount: `수령 금액: ${formatWon(receivedAmount)}`,
+              owner_label: `책임자: ${ownerLabel}`,
+              operator_label: `실무 담당자: ${operatorLabel}`,
+              contact: `실무 담당자 연락처: ${contact}`,
+              inflow_route: `유입 경로: ${inflowRoute}`,
+              receipt_status: `대금 수령 상태: ${receiptStatus}`,
+              payment_due_date: `입금 예정일: ${paymentDueDate}`,
+              due_date: `마감 날짜: ${dueDate}`,
+              tax_invoice_date: `세금계산서 발행일: ${taxInvoiceDate}`
             }
           }
         );
@@ -805,7 +937,9 @@ export default function App() {
               project_middle_category: categoryMemo,
               project_small_category: categoryMemo,
               project_group: categoryMemo,
-              operator_label: `우리 팀 실무 담당자: ${payload.operator_label || "-"}`
+              confirmed_amount: `확정 금액: ${formatWon(confirmedAmount)}`,
+              received_amount: `수령 금액: ${formatWon(receivedAmount)}`,
+              operator_label: `실무 담당자: ${operatorLabel}`
             }
           }
         );
@@ -823,8 +957,8 @@ export default function App() {
           area: "사업·매출",
           title: `${data.name} 프로젝트 등록`,
           reason: "신규 프로젝트 검토",
-          amount_or_impact: formatWon(data.confirmed_amount),
-          owner_label: data.owner_label || currentPerson?.name || "담당자",
+          amount_or_impact: formatWon(confirmedAmount),
+          owner_label: ownerLabel || currentPerson?.name || "담당자",
           status: "검토 전",
           target_table: "business_projects",
           target_id: data.id,
@@ -856,28 +990,62 @@ export default function App() {
       const monthlyPaymentMemo = String(formData.get("payment_due_cycle") || "") === "monthly" ? "입금 예정: 매월 반복" : "";
       const plainMemo = String(formData.get("memo") || "");
       const categoryMemo = groups.length ? `프로젝트 분류: ${groups.join(" > ")}` : "";
+      const confirmedAmount = parseNumber(formData.get("confirmed_amount"));
+      const receivedAmount = parseNumber(formData.get("received_amount"));
+      const clientName = String(formData.get("client_name") || "") || "";
+      const clientType = String(formData.get("client_type") || "") || "";
+      const status = String(formData.get("status") || "접수") as ProjectStatus;
+      const receiptStatus = String(formData.get("receipt_status") || "미청구") || "";
+      const ownerLabel = String(formData.get("owner_label") || "") || "";
+      const operatorLabel = String(formData.get("operator_label") || "") || "";
+      const contact = String(formData.get("contact") || "") || "";
+      const inflowRoute = String(formData.get("inflow_route") || "") || "";
+      const paymentDueDate = String(formData.get("payment_due_date") || "") || "";
+      const dueDate = String(formData.get("due_date") || "") || "";
+      const taxInvoiceDate = String(formData.get("tax_invoice_date") || "") || "";
+      const repeatClient = formData.get("repeat_client") === "on";
+      const projectMemo = buildProjectMemoLines({
+        categoryMemo,
+        clientName,
+        clientType,
+        status,
+        confirmedAmount,
+        receivedAmount,
+        manualCost: 0,
+        ownerLabel,
+        operatorLabel,
+        contact,
+        inflowRoute,
+        receiptStatus,
+        paymentDueDate,
+        dueDate,
+        taxInvoiceDate,
+        repeatClient,
+        monthlyPaymentMemo,
+        plainMemo
+      });
       const payload = {
         name: String(formData.get("name") || ""),
         category: legacyCategory,
-        client_type: (String(formData.get("client_type") || "") || null) as ClientType | null,
+        client_type: (clientType || null) as ClientType | null,
         project_major_category: major || null,
         project_middle_category: middle || null,
         project_small_category: small || null,
         project_group: groups.length ? groups : null,
-        client_name: String(formData.get("client_name") || "") || null,
-        status: String(formData.get("status") || "접수") as ProjectStatus,
-        confirmed_amount: parseNumber(formData.get("confirmed_amount")),
-        received_amount: parseNumber(formData.get("received_amount")),
-        receipt_status: (String(formData.get("receipt_status") || "미청구") || null) as ReceiptStatus | null,
-        owner_label: String(formData.get("owner_label") || "") || null,
-        operator_label: String(formData.get("operator_label") || "") || null,
-        contact: String(formData.get("contact") || "") || null,
-        inflow_route: String(formData.get("inflow_route") || "") || null,
-        payment_due_date: String(formData.get("payment_due_date") || "") || null,
-        due_date: String(formData.get("due_date") || "") || null,
-        tax_invoice_date: String(formData.get("tax_invoice_date") || "") || null,
-        repeat_client: formData.get("repeat_client") === "on",
-        memo: [categoryMemo, monthlyPaymentMemo, plainMemo].filter(Boolean).join("\n")
+        client_name: clientName || null,
+        status,
+        confirmed_amount: confirmedAmount,
+        received_amount: receivedAmount,
+        receipt_status: (receiptStatus || null) as ReceiptStatus | null,
+        owner_label: ownerLabel || null,
+        operator_label: operatorLabel || null,
+        contact: contact || null,
+        inflow_route: inflowRoute || null,
+        payment_due_date: paymentDueDate || null,
+        due_date: dueDate || null,
+        tax_invoice_date: taxInvoiceDate || null,
+        repeat_client: repeatClient,
+        memo: projectMemo
       };
 
       let error: DbError = null;
@@ -1020,13 +1188,22 @@ export default function App() {
     try {
       const usage = String(formData.get("usage") || "운영비") as ExpenseUsage;
       const memo = String(formData.get("memo") || "");
+      const paymentMethod = String(formData.get("payment_method") || "카드") as PaymentMethod;
+      const cardId = String(formData.get("card_id") || "") || null;
+      const cardLabel = cards.find((card) => card.id === cardId)?.label || "";
+      const recurringCycle = String(formData.get("recurring_cycle") || "매월");
+      const currency = String(formData.get("currency") || "KRW");
+      const foreignAmount = Number(String(formData.get("foreign_amount") || "").replace(/[^0-9.]/g, "")) || 0;
+      const exchangeRate = parseNumber(formData.get("exchange_rate"));
+      const amount = currency === "KRW" ? parseNumber(formData.get("amount")) : Math.round(foreignAmount * exchangeRate);
+      const fxMemo = currency === "KRW" ? "" : `외화 계산: ${currency} ${foreignAmount.toLocaleString("ko-KR")} × ${exchangeRate.toLocaleString("ko-KR")} = ${formatWon(amount)}`;
       const payload = {
         used_at: String(formData.get("used_at") || today()),
         purpose: String(formData.get("purpose") || "정기 구독"),
         usage,
-        payment_method: String(formData.get("payment_method") || "카드") as PaymentMethod,
-        card_id: String(formData.get("card_id") || "") || null,
-        amount: parseNumber(formData.get("amount")),
+        payment_method: paymentMethod,
+        card_id: cardId,
+        amount,
         evidence_status: "정기결제",
         transfer_status: "결제 완료" as TransferStatus,
         transfer_summary: null,
@@ -1035,11 +1212,25 @@ export default function App() {
         review_status: "검토 전" as ReviewStatus,
         review_reason: "정기 구독/반복 지출 확인",
         is_recurring: true,
-        recurring_cycle: String(formData.get("recurring_cycle") || "매월"),
-        memo: [`정기지출 대분류: ${usage}`, memo].filter(Boolean).join("\n")
+        recurring_cycle: recurringCycle,
+        memo: [
+          `정기지출 대분류: ${usage}`,
+          `결제방식: ${paymentMethod}`,
+          cardLabel ? `결제카드: ${cardLabel}` : "",
+          `반복주기: ${recurringCycle}`,
+          fxMemo,
+          memo
+        ].filter(Boolean).join("\n")
       };
 
-      const { data, error } = await saveWithHealing<{ id: string; purpose: string; amount: number }>("expense_requests", payload);
+      const { data, error } = await saveWithHealing<{ id: string; purpose: string; amount: number }>("expense_requests", payload, {
+        preserveToMemo: {
+          card_id: cardLabel ? `결제카드: ${cardLabel}` : "",
+          payment_method: `결제방식: ${paymentMethod}`,
+          usage: `정기지출 대분류: ${usage}`,
+          recurring_cycle: `반복주기: ${recurringCycle}`
+        }
+      });
       if (error) throw toFriendlyDbError(error, "반복 지출 등록에 실패했습니다.");
       if (!data) throw new Error("반복 지출 저장 결과를 받지 못했습니다.");
 
@@ -2249,7 +2440,7 @@ function Expense({
   const activeTopItems = [...activeDetail.items].sort((a, b) => Number(b.amount || 0) - Number(a.amount || 0)).slice(0, 6);
   const maxActiveAmount = Math.max(...activeTopItems.map((item) => Number(item.amount || 0)), 1);
   const usageBreakdown = Object.entries(activeDetail.items.reduce<Record<string, number>>((acc, item) => {
-    const key = item.usage || "미분류";
+    const key = getExpenseUsageLabel(item);
     acc[key] = (acc[key] || 0) + Number(item.amount || 0);
     return acc;
   }, {})).sort((a, b) => b[1] - a[1]).slice(0, 5);
@@ -2278,6 +2469,18 @@ function Expense({
         </div>
         {activeDetail.items.length === 0 ? (
           <EmptyState text="표시할 세부 항목이 없습니다." />
+        ) : activeMetric === "recurring" ? (
+          <div className="recurring-strip-list">
+            {[...activeDetail.items].sort((a, b) => Number(b.amount || 0) - Number(a.amount || 0)).map((item, index) => (
+              <button type="button" className={`recurring-strip tone-${index % 4}`} key={item.id} onClick={() => onOpenExpense(item)}>
+                <span className="recurring-purpose">{item.purpose}</span>
+                <span>{getExpenseUsageLabel(item)}</span>
+                <span>{getExpensePaymentLabel(item, cards)}</span>
+                <span>{getExpenseCycleLabel(item)}</span>
+                <strong>{formatWon(item.amount)}</strong>
+              </button>
+            ))}
+          </div>
         ) : (
           <div className="expense-detail-grid">
             <div className="expense-detail-bars">
@@ -2287,7 +2490,7 @@ function Expense({
                   <button type="button" className="expense-detail-row" key={item.id} onClick={() => onOpenExpense(item)}>
                     <div className="expense-detail-row-main">
                       <strong>{item.purpose}</strong>
-                      <span>{item.used_at}{isRecurringExpense(item) ? " · 정기" : ""} · {item.usage}</span>
+                      <span>{item.used_at}{isRecurringExpense(item) ? " · 정기" : ""} · {getExpenseUsageLabel(item)}</span>
                       <div className="expense-bar-track"><div className={`expense-bar-fill ${activeDetail.tone}`} style={{ width: `${width}%` }} /></div>
                     </div>
                     <b>{formatWon(item.amount)}</b>
@@ -2370,8 +2573,8 @@ function Expense({
                   <tr key={expense.id} className="clickable" onClick={() => onOpenExpense(expense)}>
                     <td>{expense.used_at}{isRecurringExpense(expense) ? " 반복" : ""}</td>
                     <td>{expense.purpose}</td>
-                    <td>{expense.usage}</td>
-                    <td>{expense.payment_method}{expense.card_id ? ` (${cards.find((c) => c.id === expense.card_id)?.label || ""})` : ""}</td>
+                    <td>{getExpenseUsageLabel(expense)}</td>
+                    <td>{getExpensePaymentLabel(expense, cards)}</td>
                     <td className="num">{formatWon(expense.amount)}</td>
                     <td><span className={`chip ${expense.receipt_file_url ? "green" : "orange"}`}>{expense.evidence_status || "확인 필요"}</span></td>
                     <td>{expense.transfer_status}</td>
@@ -2500,6 +2703,7 @@ function Compensation({
   onCreateBonus: () => void;
 }) {
   const totalSalary = people.reduce((sum, person) => sum + Number(person.annual_salary || 0), 0);
+  const monthlySalaryTotal = Math.round(totalSalary / 12);
   const bonusTotal = bonuses.reduce((sum, bonus) => sum + Number(bonus.bonus_amount || 0), 0);
 
   function getDeptName(deptId: string | null) {
@@ -2543,9 +2747,15 @@ function Compensation({
             </div>
           )}
           {people.length > 0 && (
-            <div className="point-card blue">
-              <div><div className="point-title">연봉 총액</div><div className="point-copy">등록 직원 계약연봉 합계</div></div>
-              <div className="point-value">{formatWon(totalSalary)}</div>
+            <div className="salary-total-stack">
+              <div className="point-card green">
+                <div><div className="point-title">이달의 월급 총액</div><div className="point-copy">등록 직원 계약연봉 ÷ 12개월</div></div>
+                <div className="point-value">{formatWon(monthlySalaryTotal)}</div>
+              </div>
+              <div className="point-card blue">
+                <div><div className="point-title">연봉 총액</div><div className="point-copy">등록 직원 계약연봉 합계</div></div>
+                <div className="point-value">{formatWon(totalSalary)}</div>
+              </div>
             </div>
           )}
         </div>
@@ -3631,12 +3841,17 @@ function RecurringWizardForm({
   onClose: () => void;
 }) {
   const draftKey = "lupl.draft.recurringWizard";
+  const defaultCardId = cards.find((card) => card.label.includes("개인-이희은"))?.id
+    || cards.find((card) => card.card_type === "개인")?.id
+    || "";
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [answers, setAnswers] = useState<Record<string, string>>({
     recurring_cycle: "매월",
     usage: "운영비",
     payment_method: "카드",
+    card_id: defaultCardId,
+    currency: "KRW",
     used_at: today(),
     amount: "0"
   });
@@ -3660,6 +3875,15 @@ function RecurringWizardForm({
 
   const method = (answers.payment_method as PaymentMethod) || "카드";
   const usage = (answers.usage as ExpenseUsage) || "운영비";
+  const currency = answers.currency || "KRW";
+
+  function setFxField(key: "foreign_amount" | "exchange_rate", value: string) {
+    const next = { ...answers, [key]: key === "exchange_rate" ? formatMoneyInputValue(value) : value.replace(/[^0-9.]/g, "") };
+    const foreignAmount = Number(String(next.foreign_amount || "").replace(/[^0-9.]/g, "")) || 0;
+    const rate = Number(String(next.exchange_rate || "").replace(/[^0-9]/g, "")) || 0;
+    next.amount = foreignAmount && rate ? formatMoneyInputValue(String(Math.round(foreignAmount * rate))) : "";
+    setAnswers(next);
+  }
 
   const steps: WizardStep[] = [
     {
@@ -3683,7 +3907,24 @@ function RecurringWizardForm({
       key: "amount",
       title: "결제 금액은 얼마인가요?",
       required: true,
-      body: <input value={answers.amount || ""} onChange={(e) => setField("amount", formatMoneyInputValue(e.target.value))} inputMode="numeric" placeholder="결제 금액" />
+      hint: currency === "KRW" ? "원화 결제는 실제 카드 명세서에 찍히는 원화 금액을 그대로 넣으면 됩니다." : "달러 결제는 청구 전이면 예상 환율을 넣고, 카드 명세서가 나오면 실제 원화 청구액으로 수정하세요.",
+      body: (
+        <div className="wizard-stack">
+          <select value={currency} onChange={(e) => setAnswers((prev) => ({ ...prev, currency: e.target.value, amount: e.target.value === "KRW" ? prev.amount : "" }))}>
+            <option value="KRW">원화(KRW)</option>
+            <option value="USD">달러(USD)</option>
+          </select>
+          {currency === "KRW" ? (
+            <input value={answers.amount || ""} onChange={(e) => setField("amount", formatMoneyInputValue(e.target.value))} inputMode="numeric" placeholder="결제 금액" />
+          ) : (
+            <div className="wizard-pair">
+              <label>달러 금액<input value={answers.foreign_amount || ""} onChange={(e) => setFxField("foreign_amount", e.target.value)} inputMode="decimal" placeholder="예: 20" /></label>
+              <label>적용 환율<input value={answers.exchange_rate || ""} onChange={(e) => setFxField("exchange_rate", e.target.value)} inputMode="numeric" placeholder="예: 1400" /></label>
+              <label className="wide">원화 예정액<input value={answers.amount || ""} readOnly placeholder="자동 계산" /></label>
+            </div>
+          )}
+        </div>
+      )
     },
     {
       key: "payment_method",
@@ -3755,11 +3996,12 @@ function BonusForm({
 }) {
   const [busy, setBusy] = useState(false);
   const [projectId, setProjectId] = useState("");
-  const [rate, setRate] = useState("10%");
+  const [rate, setRate] = useState("10");
 
   const project = projects.find((p) => p.id === projectId);
   const profit = project ? Math.round(project._profit) : 0;
-  const bonus = Math.round(profit * (Number(rate.replace("%", "")) / 100));
+  const rateNumber = Number(rate.replace(/[^0-9.]/g, "")) || 0;
+  const bonus = Math.round(profit * (rateNumber / 100));
 
   const quarter = Math.floor(new Date().getMonth() / 3) + 1;
   const periodOptions = [
@@ -3785,14 +4027,17 @@ function BonusForm({
         <label>지급 대상<select name="person_id"><option value="">선택</option>{people.map((p) => <option value={p.id} key={p.id}>{p.name}</option>)}</select></label>
         <label>프로젝트<select name="project_id" value={projectId} onChange={(e) => setProjectId(e.target.value)}><option value="">선택</option>{projects.map((p) => <option value={p.id} key={p.id}>{p.name}</option>)}</select></label>
         <label>기간<select name="period_label">{periodOptions.map((p) => <option key={p}>{p}</option>)}</select></label>
-        <label>지급률<select name="bonus_rate" value={rate} onChange={(e) => setRate(e.target.value)}>{bonusRateOptions.map((r) => <option key={r}>{r}</option>)}</select></label>
+        <label>지급률(%)
+          <input name="bonus_rate" value={rate} onChange={(e) => setRate(e.target.value.replace(/[^0-9.]/g, ""))} inputMode="decimal" list="bonus-rate-options" placeholder="예: 10" />
+          <datalist id="bonus-rate-options">{bonusRateOptions.map((r) => <option key={r} value={r.replace("%", "")} />)}</datalist>
+        </label>
         <input type="hidden" name="profit_amount" value={profit} />
         <label>지급 예정일<input type="date" name="planned_payment_date" /></label>
         <label className="wide">메모<textarea name="memo" /></label>
 
         <div className="calc-box wide">
           <div className="calc-row"><span>프로젝트 순수익(자동)</span><strong>{project ? formatWon(profit) : "프로젝트를 선택하세요"}</strong></div>
-          <div className="calc-row"><span>지급률</span><strong>{rate}</strong></div>
+          <div className="calc-row"><span>지급률</span><strong>{rateNumber}%</strong></div>
           <div className="calc-row total"><span>예상 상여금(자동)</span><strong>{project ? formatWon(bonus) : "-"}</strong></div>
         </div>
 
@@ -3814,9 +4059,25 @@ function ProjectEditForm({
 }) {
   const [busy, setBusy] = useState(false);
   const ownerOptions = people.map((person) => person.name);
+  const clientName = project.client_name || projectMemoValue(project, "거래처/기관명");
+  const clientType = project.client_type || projectMemoValue(project, "거래처 구분");
+  const status = project.status || projectMemoValue(project, "상태") || "접수";
+  const ownerLabel = project.owner_label || projectMemoValue(project, "책임자");
+  const operatorLabel = project.operator_label || projectMemoValue(project, "실무 담당자");
+  const contact = project.contact || projectMemoValue(project, "실무 담당자 연락처");
+  const inflowRoute = project.inflow_route || projectMemoValue(project, "유입 경로");
+  const receiptStatus = project.receipt_status || projectMemoValue(project, "대금 수령 상태") || "미청구";
+  const paymentDueDate = project.payment_due_date || projectMemoValue(project, "입금 예정일");
+  const dueDate = project.due_date || projectMemoValue(project, "마감 날짜");
+  const taxInvoiceDate = project.tax_invoice_date || projectMemoValue(project, "세금계산서 발행일");
+  const repeatClient = project.repeat_client || projectMemoValue(project, "반복 가능 고객") === "예";
   const cleanMemo = String(project.memo || "")
     .split("\n")
-    .filter((line) => !line.startsWith("프로젝트 분류:") && !line.startsWith("입금 예정:"))
+    .filter((line) => ![
+      "프로젝트 분류:", "거래처/기관명:", "거래처 구분:", "상태:", "확정 금액:", "수령 금액:", "수기 비용:",
+      "책임자:", "실무 담당자:", "실무 담당자 연락처:", "유입 경로:", "대금 수령 상태:", "입금 예정일:",
+      "마감 날짜:", "세금계산서 발행일:", "반복 가능 고객:", "입금 예정:"
+    ].some((prefix) => line.startsWith(prefix)))
     .join("\n");
   const categoryDefaults = {
     major: project.project_major_category || project.project_group?.[0] || "교육",
@@ -3841,21 +4102,21 @@ function ProjectEditForm({
       >
         <input type="hidden" name="project_id" value={project.id} />
         <label>프로젝트 내용<input name="name" required defaultValue={project.name} /></label>
-        <label>거래처/기관명<input name="client_name" defaultValue={project.client_name || ""} /></label>
-        <label>거래처 구분<select name="client_type" defaultValue={project.client_type || ""}><option value="">선택</option>{clientTypes.map((c) => <option key={c}>{c}</option>)}</select></label>
-        <label>상태<select name="status" defaultValue={project.status}>{projectStatuses.map((s) => <option key={s}>{s}</option>)}</select></label>
-        <label>책임자<select name="owner_label" defaultValue={project.owner_label || ""}><option value="">선택</option>{project.owner_label && !ownerOptions.includes(project.owner_label) && <option>{project.owner_label}</option>}{people.map((p) => <option key={p.id} value={p.name}>{p.name}</option>)}</select></label>
-        <label>실무 담당자<select name="operator_label" defaultValue={project.operator_label || ""}><option value="">선택</option>{project.operator_label && !ownerOptions.includes(project.operator_label) && <option>{project.operator_label}</option>}{people.map((p) => <option key={p.id} value={p.name}>{p.name}</option>)}</select></label>
-        <label>유입 경로<select name="inflow_route" defaultValue={project.inflow_route || ""}><option value="">선택</option>{inflowRoutes.map((r) => <option key={r}>{r}</option>)}</select></label>
-        <label>확정 금액(견적·계약 총액)<input className="money-input" name="confirmed_amount" defaultValue={formatMoneyInputValue(String(project.confirmed_amount || ""))} onInput={handleMoneyInput} /></label>
+        <label>거래처/기관명<input name="client_name" defaultValue={clientName} /></label>
+        <label>거래처 구분<select name="client_type" defaultValue={clientType}><option value="">선택</option>{clientType && !clientTypes.includes(clientType as ClientType) && <option>{clientType}</option>}{clientTypes.map((c) => <option key={c}>{c}</option>)}</select></label>
+        <label>상태<select name="status" defaultValue={status}>{projectStatuses.map((s) => <option key={s}>{s}</option>)}</select></label>
+        <label>책임자<select name="owner_label" defaultValue={ownerLabel}><option value="">선택</option>{ownerLabel && !ownerOptions.includes(ownerLabel) && <option>{ownerLabel}</option>}{people.map((p) => <option key={p.id} value={p.name}>{p.name}</option>)}</select></label>
+        <label>실무 담당자<select name="operator_label" defaultValue={operatorLabel}><option value="">선택</option>{operatorLabel && !ownerOptions.includes(operatorLabel) && <option>{operatorLabel}</option>}{people.map((p) => <option key={p.id} value={p.name}>{p.name}</option>)}</select></label>
+        <label>유입 경로<select name="inflow_route" defaultValue={inflowRoute}><option value="">선택</option>{inflowRoute && !inflowRoutes.includes(inflowRoute) && <option>{inflowRoute}</option>}{inflowRoutes.map((r) => <option key={r}>{r}</option>)}</select></label>
+        <label>확정 금액(견적·계약 총액)<input className="money-input" name="confirmed_amount" defaultValue={formatMoneyInputValue(String(project._revenue || ""))} onInput={handleMoneyInput} /></label>
         <label>수령 금액(실입금)<input className="money-input" name="received_amount" defaultValue={formatMoneyInputValue(String(project.received_amount || ""))} onInput={handleMoneyInput} /></label>
-        <label>대금 수령 상태<select name="receipt_status" defaultValue={project.receipt_status || "미청구"}>{receiptStatuses.map((r) => <option key={r}>{r}</option>)}</select></label>
-        <label>실무 담당자 연락처<input name="contact" defaultValue={project.contact || ""} /></label>
-        <label>입금 예정일<input type="date" name="payment_due_date" defaultValue={project.payment_due_date || ""} /></label>
-        <label>마감 날짜<input type="date" name="due_date" defaultValue={project.due_date || ""} /></label>
-        <label>세금계산서 발행일<input type="date" name="tax_invoice_date" defaultValue={project.tax_invoice_date || ""} /></label>
+        <label>대금 수령 상태<select name="receipt_status" defaultValue={receiptStatus}>{receiptStatuses.map((r) => <option key={r}>{r}</option>)}</select></label>
+        <label>실무 담당자 연락처<input name="contact" defaultValue={contact} /></label>
+        <label>입금 예정일<input type="date" name="payment_due_date" defaultValue={paymentDueDate} /></label>
+        <label>마감 날짜<input type="date" name="due_date" defaultValue={dueDate} /></label>
+        <label>세금계산서 발행일<input type="date" name="tax_invoice_date" defaultValue={taxInvoiceDate} /></label>
         <label>입금 반복<select name="payment_due_cycle" defaultValue={project.memo?.includes("매월 반복") ? "monthly" : "once"}><option value="once">일회성</option><option value="monthly">매월 반복</option></select></label>
-        <label className="check-label"><input type="checkbox" name="repeat_client" defaultChecked={Boolean(project.repeat_client)} /><span>반복 가능 고객</span></label>
+        <label className="check-label"><input type="checkbox" name="repeat_client" defaultChecked={repeatClient} /><span>반복 가능 고객</span></label>
         <ProjectCategoryFields defaults={categoryDefaults} />
         <label className="wide">비고/메모<textarea name="memo" defaultValue={cleanMemo} /></label>
         <div className="modal-actions">
@@ -4172,6 +4433,18 @@ function DetailModal({
   if (modal === "projectDetail" && selectedProject) {
     const p = selectedProject;
     const maxBar = Math.max(p._revenue, p._cost, Math.abs(p._profit), 1);
+    const clientName = p.client_name || projectMemoValue(p, "거래처/기관명") || "-";
+    const clientType = p.client_type || projectMemoValue(p, "거래처 구분") || "-";
+    const status = p.status || projectMemoValue(p, "상태") || "-";
+    const ownerLabel = p.owner_label || projectMemoValue(p, "책임자") || "-";
+    const operatorLabel = p.operator_label || projectMemoValue(p, "실무 담당자") || "-";
+    const contact = p.contact || projectMemoValue(p, "실무 담당자 연락처") || "-";
+    const inflowRoute = p.inflow_route || projectMemoValue(p, "유입 경로") || "-";
+    const receiptStatus = p.receipt_status || projectMemoValue(p, "대금 수령 상태") || "-";
+    const paymentDueDate = p.payment_due_date || projectMemoValue(p, "입금 예정일") || "-";
+    const dueDate = p.due_date || projectMemoValue(p, "마감 날짜") || "-";
+    const taxInvoiceDate = p.tax_invoice_date || projectMemoValue(p, "세금계산서 발행일") || "-";
+    const repeatClient = p.repeat_client || projectMemoValue(p, "반복 가능 고객") === "예";
     return (
       <>
         <ModalHead title={`${p.name}`} desc="외주용역 항목 상세입니다. 비용은 연결된 지출결의에서 자동 집계됩니다." onClose={onClose} />
@@ -4190,21 +4463,23 @@ function DetailModal({
         </div>
 
         <div className="modal-info">
-          <Info label="거래처/기관명" value={p.client_name || "-"} />
-          <Info label="거래처 구분" value={p.client_type || "-"} />
-          <Info label="상태" value={p.status} />
-          <Info label="책임자" value={p.owner_label || "-"} />
-          <Info label="실무 담당자 연락처" value={p.contact || "-"} />
-          <Info label="유입 경로" value={p.inflow_route || "-"} />
-          <Info label="대분류" value={(p.project_group || []).join(", ") || "-"} />
+          <Info label="거래처/기관명" value={clientName} />
+          <Info label="거래처 구분" value={clientType} />
+          <Info label="상태" value={status} />
+          <Info label="책임자" value={ownerLabel} />
+          <Info label="실무 담당자" value={operatorLabel} />
+          <Info label="실무 담당자 연락처" value={contact} />
+          <Info label="유입 경로" value={inflowRoute} />
+          <Info label="프로젝트 분류" value={getProjectCategoryLabel(p)} />
           <Info label="확정 금액" value={formatWon(p._revenue)} />
           <Info label="수령 금액" value={formatWon(p.received_amount)} />
           <Info label="미수금" value={formatWon(p._receivable)} />
           <Info label="자동집계 비용" value={formatWon(p._autoCost)} />
-          <Info label="대금 수령 상태" value={p.receipt_status || "-"} />
-          <Info label="입금 예정일" value={p.payment_due_date || "-"} />
-          <Info label="세금계산서 발행일" value={p.tax_invoice_date || "-"} />
-          <Info label="반복 가능 고객" value={p.repeat_client ? "예" : "아니오"} />
+          <Info label="대금 수령 상태" value={receiptStatus} />
+          <Info label="입금 예정일" value={paymentDueDate} />
+          <Info label="마감 날짜" value={dueDate} />
+          <Info label="세금계산서 발행일" value={taxInvoiceDate} />
+          <Info label="반복 가능 고객" value={repeatClient ? "예" : "아니오"} />
           <Info label="메모" value={p.memo || "-"} />
         </div>
         <div className="modal-actions project-actions">
@@ -4252,7 +4527,6 @@ function DetailModal({
 
   if ((modal === "expenseReview" || modal === "taxReview") && selectedExpense) {
     const linkedProject = projects.find((project) => project.id === selectedExpense.project_id);
-    const cardLabel = cards.find((c) => c.id === selectedExpense.card_id)?.label;
     return (
       <>
         <ModalHead title={selectedExpense.purpose} desc="지출결의 상세입니다. 증빙·결제수단·이체 내용을 확인하고 승인할 수 있습니다." onClose={onClose} />
@@ -4266,8 +4540,9 @@ function DetailModal({
         <div className="modal-info">
           <Info label="사용일" value={selectedExpense.used_at} />
           <Info label="금액" value={formatWon(selectedExpense.amount)} />
-          <Info label="사용 용도" value={selectedExpense.usage} />
-          <Info label="결제방식" value={`${selectedExpense.payment_method || "-"}${cardLabel ? ` (${cardLabel})` : ""}`} />
+          <Info label="사용 용도" value={getExpenseUsageLabel(selectedExpense)} />
+          <Info label="결제방식" value={getExpensePaymentLabel(selectedExpense, cards)} />
+          {isRecurringExpense(selectedExpense) && <Info label="반복 주기" value={getExpenseCycleLabel(selectedExpense)} />}
           <Info label="이체 여부" value={selectedExpense.transfer_status || "-"} />
           <Info label="연결 프로젝트" value={linkedProject?.name || "미연결"} />
           <Info label="증빙 상태" value={selectedExpense.evidence_status || "-"} />
