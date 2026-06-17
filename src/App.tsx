@@ -374,6 +374,10 @@ function getExpenseCycleLabel(expense: ExpenseRequest) {
   return expense.recurring_cycle || readMemoField(expense.memo, "반복주기") || (isRecurringExpense(expense) ? "매월" : "-");
 }
 
+function getExpenseReceiptUrl(expense: ExpenseRequest) {
+  return expense.receipt_file_url || readMemoField(expense.memo, "영수증 보기");
+}
+
 function buildProjectMemoLines(payload: {
   categoryMemo: string;
   clientName: string;
@@ -4907,6 +4911,7 @@ function DetailModal({
 
   if ((modal === "expenseReview" || modal === "taxReview") && selectedExpense) {
     const linkedProject = projects.find((project) => project.id === selectedExpense.project_id);
+    const receiptUrl = getExpenseReceiptUrl(selectedExpense);
     return (
       <>
         <ModalHead title={selectedExpense.purpose} desc="지출결의 상세입니다. 증빙·결제수단·이체 내용을 확인하고 승인할 수 있습니다." onClose={onClose} />
@@ -4918,7 +4923,7 @@ function DetailModal({
           </div>
         )}
         <div className="modal-info">
-          <Info label="사용일" value={selectedExpense.used_at} />
+          <Info label="사용일" value={selectedExpense.used_at} className="important" />
           <Info label="금액" value={formatWon(selectedExpense.amount)} />
           <Info label="사용 용도" value={getExpenseUsageLabel(selectedExpense)} />
           <Info label="결제방식" value={getExpensePaymentLabel(selectedExpense, cards)} />
@@ -4928,12 +4933,18 @@ function DetailModal({
           <Info label="증빙 상태" value={selectedExpense.evidence_status || "-"} />
           <Info label="OCR 거래처" value={selectedExpense.ocr_vendor_name || "OCR 미실행/미인식"} />
           <Info label="OCR 금액" value={selectedExpense.ocr_total_amount ? formatWon(selectedExpense.ocr_total_amount) : "-"} />
-          <Info label="파일" value={selectedExpense.receipt_file_url ? "첨부됨" : "없음"} />
+          <Info label="파일" value={receiptUrl ? "첨부됨" : "없음"} />
           <Info label="이체 내용 요약" value={selectedExpense.transfer_summary || "-"} />
           <Info label="메모" value={selectedExpense.memo || "-"} />
         </div>
-        {selectedExpense.receipt_file_url && (
-          <a className="btn small" href={selectedExpense.receipt_file_url} target="_blank" rel="noreferrer">영수증 파일 열기</a>
+        {receiptUrl && (
+          <div className="receipt-preview">
+            <div className="receipt-preview-head">
+              <strong>영수증 이미지</strong>
+              <a className="btn small" href={receiptUrl} target="_blank" rel="noreferrer">원본 열기</a>
+            </div>
+            <img src={receiptUrl} alt={`${selectedExpense.purpose} 영수증`} loading="lazy" />
+          </div>
         )}
         <ReviewActions selectedReview={selectedReview} onClose={onClose} onReviewStatus={onReviewStatus} onDeleteReview={onDeleteReview}>
           <button className="btn" type="button" onClick={onEditExpense}>지출결의 수정</button>
@@ -5006,9 +5017,9 @@ function ModalHead({ title, desc, onClose }: { title: string; desc: string; onCl
   );
 }
 
-function Info({ label, value }: { label: string; value: string }) {
+function Info({ label, value, className = "" }: { label: string; value: string; className?: string }) {
   return (
-    <div className="info-box">
+    <div className={`info-box ${className}`.trim()}>
       <span>{label}</span>
       <strong>{value}</strong>
     </div>

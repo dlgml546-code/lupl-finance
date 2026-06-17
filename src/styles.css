@@ -1311,6 +1311,53 @@ input:focus, select:focus, textarea:focus {
   word-break: keep-all;
 }
 
+.info-box.important {
+  background: #e8f3ff;
+  border-color: rgba(49, 130, 246, 0.28);
+}
+
+.info-box.important span {
+  color: var(--blue);
+}
+
+.info-box.important strong {
+  color: #245fbe;
+  font-size: 17px;
+  font-weight: 800;
+}
+
+.receipt-preview {
+  display: grid;
+  gap: 12px;
+  margin-top: 16px;
+  border-radius: 18px;
+  background: rgba(248, 250, 252, .95);
+  border: 1px solid rgba(16,24,40,.08);
+  padding: 14px;
+}
+
+.receipt-preview-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.receipt-preview-head strong {
+  font-size: 15px;
+  font-weight: 800;
+  color: var(--ink);
+}
+
+.receipt-preview img {
+  width: 100%;
+  max-height: 560px;
+  object-fit: contain;
+  border-radius: 14px;
+  background: #eef2f7;
+  border: 1px solid rgba(16,24,40,.08);
+}
+
 .modal-form {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
