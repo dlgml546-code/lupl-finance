@@ -2140,6 +2140,15 @@ input:focus, select:focus, textarea:focus {
 .inline-form { display: flex; gap: 10px; margin-bottom: 18px; flex-wrap: wrap; }
 .inline-form input, .inline-form select { flex: 1; min-width: 120px; }
 .inline-form button { flex-shrink: 0; }
+.mobile-device-form input[name="device_id"] { flex: 2 1 260px; }
+.mobile-device-form input[name="memo"] { flex: 1.4 1 180px; }
+.device-active {
+  align-self: stretch;
+  min-height: 44px;
+  padding: 0 10px;
+  border-radius: 12px;
+  background: rgba(248,250,252,.92);
+}
 .manage-list { display: grid; gap: 10px; }
 .manage-row {
   display: flex;
@@ -2152,6 +2161,12 @@ input:focus, select:focus, textarea:focus {
 }
 .manage-row strong { display: block; font-size: 14px; font-weight: 700; }
 .manage-row span { display: block; color: var(--muted); font-size: 12px; margin-top: 3px; }
+.mobile-device-id {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  word-break: break-all;
+  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+}
 .btn.danger { color: var(--coral); }
 
 /* 20번: 프로젝트 상세 인포그래픽 */

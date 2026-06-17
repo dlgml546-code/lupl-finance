@@ -97,6 +97,17 @@ export type ExpenseCategoryItem = {
   sort_order: number | null;
 };
 
+export type MobileReceiptDevice = {
+  id: string;
+  device_id: string;
+  owner_name: string | null;
+  person_id: string | null;
+  memo: string | null;
+  is_active: boolean;
+  created_at?: string;
+  updated_at?: string;
+};
+
 export type BusinessProject = {
   id: string;
   name: string;
@@ -130,6 +141,7 @@ export type ExpenseRequest = {
   id: string;
   used_at: string;
   purpose: string;
+  category?: ExpenseUsage | string | null;
   usage: ExpenseUsage;          // 사용 용도
   payment_method: PaymentMethod | null;
   card_id: string | null;       // 카드 결제 시 어떤 카드인지

@@ -22,6 +22,7 @@ import type {
   ExpenseCategoryItem,
   ExpenseRequest,
   ExpenseUsage,
+  MobileReceiptDevice,
   PagePermission,
   PaymentCard,
   PaymentMethod,
@@ -66,6 +67,7 @@ type ModalKey =
   | "cashHistory"
   | "categoryManage"
   | "cardManage"
+  | "mobileDeviceManage"
   | "reviewDetail"
   | null;
 
@@ -354,10 +356,39 @@ function readMemoField(memo: string | null | undefined, label: string) {
   return line ? line.slice(label.length + 1).trim() : "";
 }
 
-function getExpenseUsageLabel(expense: Pick<ExpenseRequest, "usage" | "memo" | "is_recurring" | "recurring_cycle" | "evidence_status" | "review_reason" | "purpose">) {
+const mobileReceiptMemoLabels = [
+  "업로드 기기 소유자",
+  "기기 ID",
+  "OCR 가맹점",
+  "OCR 사용일",
+  "OCR 총액",
+  "영수증 저장 경로",
+  "영수증 보기",
+  "OCR 원문",
+  "등록 경로",
+  "묶음"
+];
+
+function cleanExpenseMemo(memo: string | null | undefined) {
+  return String(memo || "")
+    .split("\n")
+    .filter((line) => {
+      const trimmed = line.trim();
+      return trimmed && !mobileReceiptMemoLabels.some((label) => trimmed.startsWith(`${label}:`));
+    })
+    .join("\n");
+}
+
+function getExpenseDeviceId(expense: Pick<ExpenseRequest, "memo">) {
+  return readMemoField(expense.memo, "기기 ID");
+}
+
+function getExpenseUsageLabel(expense: Pick<ExpenseRequest, "usage" | "category" | "memo" | "is_recurring" | "recurring_cycle" | "evidence_status" | "review_reason" | "purpose">) {
   const memoUsage = readMemoField(expense.memo, "정기지출 대분류") || readMemoField(expense.memo, "사용용도");
   const raw = String(expense.usage || "").trim();
+  const legacyCategory = String(expense.category || "").trim();
   if (raw && raw !== "미분류") return raw;
+  if (legacyCategory && legacyCategory !== "미분류") return legacyCategory;
   if (memoUsage) return memoUsage;
   return isRecurringExpense(expense) ? "운영비" : "미분류";
 }
@@ -376,6 +407,28 @@ function getExpenseCycleLabel(expense: ExpenseRequest) {
 
 function getExpenseReceiptUrl(expense: ExpenseRequest) {
   return expense.receipt_file_url || readMemoField(expense.memo, "영수증 보기");
+}
+
+function toLegacyExpenseCategory(usage: string | null | undefined) {
+  const value = String(usage || "").trim();
+  const map: Record<string, string> = {
+    "여비·출장비": "여비교통비",
+    "업무 추진비": "운영비",
+    "내부 사업비": "내부 사업비",
+    "외부 사업비(외주용역)": "외부 사업비",
+    "복리후생비": "운영비",
+    "운영비": "운영비",
+    "차량비": "운영비",
+    "홍보비(광고비)": "운영비",
+    "자산취득비(비품 구입 등)": "운영비"
+  };
+  return map[value] || "운영비";
+}
+
+function getDeviceOwnerName(deviceId: string | null | undefined, devices: MobileReceiptDevice[]) {
+  if (!deviceId) return "";
+  const device = devices.find((item) => item.device_id === deviceId && item.is_active !== false);
+  return device?.owner_name || "";
 }
 
 function buildProjectMemoLines(payload: {
@@ -655,6 +708,8 @@ export default function App() {
   const [bonuses, setBonuses] = useState<BonusPayment[]>([]);
   const [labor, setLabor] = useState<ProjectLaborAllocation[]>([]);
   const [cash, setCash] = useState<CashSnapshot[]>([]);
+  const [mobileDevices, setMobileDevices] = useState<MobileReceiptDevice[]>([]);
+  const [mobileDeviceTableReady, setMobileDeviceTableReady] = useState(true);
 
   const [section, setSection] = useState<SectionKey>("overview");
   const [modal, setModal] = useState<ModalKey>(null);
@@ -797,6 +852,16 @@ export default function App() {
       setBonuses((bonusesRes.data || []) as BonusPayment[]);
       setLabor((laborRes.data || []) as ProjectLaborAllocation[]);
       setCash((cashRes.data || []) as CashSnapshot[]);
+
+      const mobileDevicesRes = await supabase.from("mobile_receipt_devices").select("*").order("updated_at", { ascending: false });
+      if (mobileDevicesRes.error) {
+        console.warn("mobile_receipt_devices not ready", mobileDevicesRes.error);
+        setMobileDeviceTableReady(false);
+        setMobileDevices([]);
+      } else {
+        setMobileDeviceTableReady(true);
+        setMobileDevices((mobileDevicesRes.data || []) as MobileReceiptDevice[]);
+      }
     } catch (error) {
       console.error(error);
       showToast(error instanceof Error ? error.message : "데이터를 불러오지 못했습니다.", "err");
@@ -1227,6 +1292,7 @@ export default function App() {
         used_at: String(formData.get("used_at") || today()),
         purpose,
         usage,
+        category: toLegacyExpenseCategory(usage),
         payment_method: String(formData.get("payment_method") || "카드") as PaymentMethod,
         card_id: String(formData.get("card_id") || "") || null,
         amount: parseNumber(formData.get("amount")) || Number(ocrResult?.total_amount || 0),
@@ -1291,6 +1357,7 @@ export default function App() {
         used_at: String(formData.get("used_at") || today()),
         purpose: String(formData.get("purpose") || "정기 구독"),
         usage,
+        category: toLegacyExpenseCategory(usage),
         payment_method: paymentMethod,
         card_id: cardId,
         amount,
@@ -1434,10 +1501,12 @@ export default function App() {
       if (!expenseId) throw new Error("수정할 지출결의를 찾지 못했습니다.");
       const nextIsRecurring = formData.get("is_recurring") === "on";
       const nextRecurringCycle = String(formData.get("recurring_cycle") || (nextIsRecurring ? "매월" : ""));
+      const nextUsage = String(formData.get("usage") || "운영비") as ExpenseUsage;
       const payload = {
         used_at: String(formData.get("used_at") || today()),
         purpose: String(formData.get("purpose") || "지출"),
-        usage: String(formData.get("usage") || "운영비") as ExpenseUsage,
+        usage: nextUsage,
+        category: toLegacyExpenseCategory(nextUsage),
         payment_method: String(formData.get("payment_method") || "카드") as PaymentMethod,
         card_id: String(formData.get("card_id") || "") || null,
         amount: parseNumber(formData.get("amount")),
@@ -1618,6 +1687,7 @@ export default function App() {
           used_at: transferDates[index] || today(),
           purpose: purpose.trim(),
           usage: "운영비" as ExpenseUsage,
+          category: toLegacyExpenseCategory("운영비"),
           payment_method: "계좌이체" as PaymentMethod,
           card_id: null,
           amount: parseNumber(transferAmounts[index]),
@@ -1736,6 +1806,49 @@ export default function App() {
       await loadAll();
     } catch (error) {
       showToast(error instanceof Error ? error.message : "삭제 실패", "err");
+    }
+  }
+
+  async function saveMobileDevice(formData: FormData) {
+    const deviceId = String(formData.get("device_id") || "").trim();
+    const personId = String(formData.get("person_id") || "").trim();
+    const selected = people.find((person) => person.id === personId);
+    const ownerName = String(formData.get("owner_name") || selected?.name || "").trim();
+
+    if (!deviceId || !ownerName) {
+      showToast("기기 ID와 담당자를 입력해 주세요.", "warn");
+      return;
+    }
+
+    try {
+      const payload = {
+        device_id: deviceId,
+        owner_name: ownerName,
+        person_id: personId || null,
+        memo: String(formData.get("memo") || "").trim() || null,
+        is_active: formData.get("is_active") !== "off",
+        updated_at: new Date().toISOString()
+      };
+      const { error } = await saveWithHealing("mobile_receipt_devices", payload, { upsert: { onConflict: "device_id" } });
+      if (error) throw error;
+      showToast("모바일 기기 담당자를 저장했습니다.");
+      await loadAll();
+    } catch (error) {
+      console.error(error);
+      showToast(error instanceof Error ? error.message : "모바일 기기 저장 실패", "err");
+    }
+  }
+
+  async function deleteMobileDevice(deviceId: string) {
+    if (!window.confirm("이 기기 담당자 연결을 삭제할까요? 기존 지출결의는 삭제되지 않습니다.")) return;
+    try {
+      const { error } = await supabase.from("mobile_receipt_devices").delete().eq("device_id", deviceId);
+      if (error) throw error;
+      showToast("모바일 기기 연결을 삭제했습니다.");
+      await loadAll();
+    } catch (error) {
+      console.error(error);
+      showToast(error instanceof Error ? error.message : "모바일 기기 삭제 실패", "err");
     }
   }
 
@@ -2081,6 +2194,7 @@ export default function App() {
             onCreate={() => setModal("expenseForm")}
             onRecurring={() => setModal("recurringForm")}
             onManageCard={() => setModal("cardManage")}
+            onManageMobileDevices={() => setModal("mobileDeviceManage")}
           />
         )}
         {section === "revenue" && (
@@ -2153,9 +2267,12 @@ export default function App() {
         selectedPerson={selectedPerson}
         currentPerson={currentPerson}
         people={people}
+        mobileDevices={mobileDevices}
+        mobileDeviceTableReady={mobileDeviceTableReady}
         departments={departments}
         cash={visibleCash}
         projects={projectsComputed}
+        expenses={expenses}
         cards={cards}
         categories={categories}
         bonuses={bonuses}
@@ -2177,6 +2294,8 @@ export default function App() {
         onDeleteCategory={deleteCategory}
         onCreateCard={createCard}
         onDeleteCard={deleteCard}
+        onSaveMobileDevice={saveMobileDevice}
+        onDeleteMobileDevice={deleteMobileDevice}
         onDeleteProject={deleteProject}
         onDeleteExpense={deleteExpense}
         onDeleteReview={deleteReviewItem}
@@ -2472,7 +2591,8 @@ function Expense({
   onOpenExpense,
   onCreate,
   onRecurring,
-  onManageCard
+  onManageCard,
+  onManageMobileDevices
 }: {
   projects: ProjectComputed[];
   expenses: ExpenseRequest[];
@@ -2481,6 +2601,7 @@ function Expense({
   onCreate: () => void;
   onRecurring: () => void;
   onManageCard: () => void;
+  onManageMobileDevices: () => void;
 }) {
   type ExpenseMetricKey = "recurring" | "month" | "total" | "pending";
   const [activeMetric, setActiveMetric] = useState<ExpenseMetricKey>("recurring");
@@ -2544,6 +2665,7 @@ function Expense({
     <section className="section active">
       <div className="section-toolbar">
         <button className="btn small" onClick={onManageCard}>결제수단(카드) 관리</button>
+        <button className="btn small" onClick={onManageMobileDevices}>모바일 기기 관리</button>
       </div>
       <div className="grid four expense-summary">
         <KpiCard compact label="정기 결제" value={formatWon(recurringTotal)} chip={`${recurringExpenses.length}건`} tone="blue" empty={recurringExpenses.length === 0} active={activeMetric === "recurring"} onClick={() => setActiveMetric("recurring")} />
@@ -2640,7 +2762,7 @@ function Expense({
                 <div className="queue-item orange clickable" key={item.id} onClick={() => onOpenExpense(item)}>
                   <div>
                     <strong>{item.purpose}</strong>
-                    <span>{item.usage} · {item.payment_method}{item.card_id ? ` · ${cards.find((c) => c.id === item.card_id)?.label || ""}` : ""}</span>
+                    <span>{getExpenseUsageLabel(item)} · {item.payment_method}{item.card_id ? ` · ${cards.find((c) => c.id === item.card_id)?.label || ""}` : ""}</span>
                   </div>
                   <div className="count">{formatWon(item.amount)}</div>
                 </div>
@@ -2679,7 +2801,7 @@ function Expense({
                     <td>{getExpenseUsageLabel(expense)}</td>
                     <td>{getExpensePaymentLabel(expense, cards)}</td>
                     <td className="num">{formatWon(expense.amount)}</td>
-                    <td><span className={`chip ${expense.receipt_file_url ? "green" : "orange"}`}>{expense.evidence_status || "확인 필요"}</span></td>
+                    <td><span className={`chip ${getExpenseReceiptUrl(expense) ? "green" : "orange"}`}>{expense.evidence_status || "확인 필요"}</span></td>
                     <td>{expense.transfer_status}</td>
                     <td><span className={`chip ${expense.review_status === "승인" ? "green" : "orange"}`}>{expense.review_status}</span></td>
                   </tr>
@@ -3392,10 +3514,10 @@ function Org({
 
 function Modal({
   modal, setModal, selectedReview, selectedProject, selectedExpense, selectedPerson,
-  currentPerson, people, departments, cash, projects, cards, categories, bonuses, labor, compReviews,
+  currentPerson, people, mobileDevices, mobileDeviceTableReady, departments, cash, projects, expenses, cards, categories, bonuses, labor, compReviews,
   onReviewStatus, onCreateProject, onUpdateProject, onCompleteProject, onCreateExpense, onCreateRecurring, onCreatePerson,
   onCreateBonus, onCreateLabor, onCreatePermission, onCreateCash, onUpdateExpense, onCreateCategory,
-  onDeleteCategory, onCreateCard, onDeleteCard, onDeleteProject, onDeleteExpense, onDeleteReview, onEditPerson
+  onDeleteCategory, onCreateCard, onDeleteCard, onSaveMobileDevice, onDeleteMobileDevice, onDeleteProject, onDeleteExpense, onDeleteReview, onEditPerson
 }: {
   modal: ModalKey;
   setModal: (modal: ModalKey) => void;
@@ -3405,9 +3527,12 @@ function Modal({
   selectedPerson: Person | null;
   currentPerson: Person;
   people: Person[];
+  mobileDevices: MobileReceiptDevice[];
+  mobileDeviceTableReady: boolean;
   departments: Department[];
   cash: CashSnapshot[];
   projects: ProjectComputed[];
+  expenses: ExpenseRequest[];
   cards: PaymentCard[];
   categories: ExpenseCategoryItem[];
   bonuses: BonusPayment[];
@@ -3429,6 +3554,8 @@ function Modal({
   onDeleteCategory: (id: string) => Promise<void>;
   onCreateCard: (formData: FormData) => Promise<void>;
   onDeleteCard: (id: string) => Promise<void>;
+  onSaveMobileDevice: (formData: FormData) => Promise<void>;
+  onDeleteMobileDevice: (deviceId: string) => Promise<void>;
   onDeleteProject: (project: BusinessProject) => Promise<void>;
   onDeleteExpense: (expense: ExpenseRequest) => Promise<void>;
   onDeleteReview: (review: ReviewItem) => Promise<void>;
@@ -3546,6 +3673,18 @@ function Modal({
           <CardManage cards={cards} onCreate={onCreateCard} onDelete={onDeleteCard} onClose={close} />
         )}
 
+        {modal === "mobileDeviceManage" && (
+          <MobileDeviceManage
+            devices={mobileDevices}
+            people={people}
+            expenses={expenses}
+            tableReady={mobileDeviceTableReady}
+            onSave={onSaveMobileDevice}
+            onDelete={onDeleteMobileDevice}
+            onClose={close}
+          />
+        )}
+
         {(modal === "expenseReview" || modal === "taxReview" || modal === "projectDetail" || modal === "employeeDetail" || modal === "reviewDetail") && (
           <DetailModal
             modal={modal}
@@ -3554,6 +3693,7 @@ function Modal({
             selectedExpense={selectedExpense}
             selectedPerson={selectedPerson || currentPerson}
             people={people}
+            mobileDevices={mobileDevices}
             cards={cards}
             projects={projects}
             bonuses={bonuses}
@@ -4184,6 +4324,7 @@ function ExpenseEditForm({
   const [busy, setBusy] = useState(false);
   const [method, setMethod] = useState<PaymentMethod>((expense.payment_method || "카드") as PaymentMethod);
   const [isRecurring, setIsRecurring] = useState(Boolean(expense.is_recurring));
+  const currentUsage = String(expense.usage || expense.category || "운영비");
   return (
     <>
       <ModalHead title="지출결의 수정" desc="관리자는 정기구독 금액을 포함해 지출결의 원본 내용을 수정할 수 있습니다." onClose={onClose} />
@@ -4203,7 +4344,7 @@ function ExpenseEditForm({
         <input type="hidden" name="evidence_status" value={expense.evidence_status || "증빙 필요"} />
         <label>사용일<input type="date" name="used_at" defaultValue={expense.used_at || today()} /></label>
         <label>목적/항목명<input name="purpose" defaultValue={expense.purpose} required /></label>
-        <label>사용 용도<select name="usage" defaultValue={expense.usage}>{expenseUsages.map((c) => <option key={c}>{c}</option>)}{categories.filter((c) => !expenseUsages.includes(c.name as ExpenseUsage)).map((c) => <option key={c.id}>{c.name}</option>)}</select></label>
+        <label>사용 용도<select name="usage" defaultValue={currentUsage}>{expenseUsages.map((c) => <option key={c}>{c}</option>)}{currentUsage && !expenseUsages.includes(currentUsage as ExpenseUsage) && <option>{currentUsage}</option>}{categories.filter((c) => !expenseUsages.includes(c.name as ExpenseUsage)).map((c) => <option key={c.id}>{c.name}</option>)}</select></label>
         <label>금액<input className="money-input" name="amount" defaultValue={formatMoneyInputValue(String(expense.amount || ""))} onInput={handleMoneyInput} inputMode="numeric" required /></label>
         <label>결제방식<select name="payment_method" value={method} onChange={(event) => setMethod(event.target.value as PaymentMethod)}>{paymentMethods.map((m) => <option key={m}>{m}</option>)}</select></label>
         {method === "카드" && <label>카드<select name="card_id" defaultValue={expense.card_id || ""}><option value="">카드 선택</option>{cards.map((c) => <option key={c.id} value={c.id}>{c.label}</option>)}</select></label>}
@@ -4597,6 +4738,72 @@ function CardManage({
   );
 }
 
+function MobileDeviceManage({
+  devices, people, expenses, tableReady, onSave, onDelete, onClose
+}: {
+  devices: MobileReceiptDevice[];
+  people: Person[];
+  expenses: ExpenseRequest[];
+  tableReady: boolean;
+  onSave: (formData: FormData) => Promise<void>;
+  onDelete: (deviceId: string) => Promise<void>;
+  onClose: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const candidateIds = Array.from(new Set(expenses.map(getExpenseDeviceId).filter(Boolean))).sort();
+
+  return (
+    <>
+      <ModalHead title="모바일 기기 관리" desc="폰앱에서 올라온 기기 ID를 직원 이름과 연결합니다. 한 번 연결하면 지출결의 상세에서 업로드 담당자가 표시됩니다." onClose={onClose} />
+      {!tableReady && (
+        <div className="alert-top warn compact-notice modal-notice">
+          <strong>기기 관리 테이블이 아직 없습니다.</strong>
+          <p>Supabase SQL Editor에서 <code>supabase/mobile_receipt_devices.sql</code> 파일 내용을 한 번 실행하면 저장이 활성화됩니다.</p>
+        </div>
+      )}
+      <form
+        className="inline-form mobile-device-form"
+        onSubmit={async (event) => {
+          event.preventDefault();
+          setBusy(true);
+          await onSave(new FormData(event.currentTarget));
+          event.currentTarget.reset();
+          setBusy(false);
+        }}
+      >
+        <input name="device_id" list="mobile-device-candidates" placeholder="기기 ID" required />
+        <datalist id="mobile-device-candidates">
+          {candidateIds.map((id) => <option key={id} value={id} />)}
+        </datalist>
+        <select name="person_id" defaultValue="">
+          <option value="">직원 선택</option>
+          {people.map((person) => <option key={person.id} value={person.id}>{person.name}</option>)}
+        </select>
+        <input name="owner_name" placeholder="담당자명 직접 입력" />
+        <input name="memo" placeholder="메모(선택)" />
+        <label className="check-label device-active"><input type="checkbox" name="is_active" defaultChecked /><span>사용</span></label>
+        <button className="btn blue" disabled={busy || !tableReady} type="submit">{busy ? "저장 중" : "저장"}</button>
+      </form>
+      {candidateIds.length > 0 && (
+        <p className="form-help">최근 지출결의에서 발견한 기기 ID: {candidateIds.slice(0, 3).join(", ")}{candidateIds.length > 3 ? ` 외 ${candidateIds.length - 3}개` : ""}</p>
+      )}
+      <div className="manage-list mobile-device-list">
+        {devices.length === 0 && <EmptyState text={tableReady ? "등록된 모바일 기기가 없습니다. 위에서 기기 ID와 담당자를 연결하세요." : "테이블 생성 후 기기 담당자를 등록할 수 있습니다."} />}
+        {devices.map((device) => (
+          <div className="manage-row" key={device.device_id}>
+            <div>
+              <strong>{device.owner_name || "담당자 미등록"}</strong>
+              <span className="mobile-device-id">{device.device_id}</span>
+              {device.memo && <span>{device.memo}</span>}
+            </div>
+            <button className="btn small ghost danger" onClick={() => onDelete(device.device_id)} type="button">삭제</button>
+          </div>
+        ))}
+      </div>
+    </>
+  );
+}
+
 
 function ProjectCategoryFields({ defaults }: { defaults?: { major?: string | null; middle?: string | null; small?: string | null } }) {
   const majors = Object.keys(projectCategoryTree);
@@ -4788,7 +4995,7 @@ function FormModal({
 
 function DetailModal({
   modal, selectedReview, selectedProject, selectedExpense, selectedPerson,
-  people, cards, projects, bonuses, labor, compReviews, onClose, onEditExpense, onReviewStatus
+  people, mobileDevices, cards, projects, bonuses, labor, compReviews, onClose, onEditExpense, onReviewStatus
   , onDeleteProject, onCompleteProject, onDeleteExpense, onDeleteReview, onEditProject, onEditPerson
 }: {
   modal: ModalKey;
@@ -4797,6 +5004,7 @@ function DetailModal({
   selectedExpense: ExpenseRequest | null;
   selectedPerson: Person;
   people: Person[];
+  mobileDevices: MobileReceiptDevice[];
   cards: PaymentCard[];
   projects: ProjectComputed[];
   bonuses: BonusPayment[];
@@ -4912,6 +5120,9 @@ function DetailModal({
   if ((modal === "expenseReview" || modal === "taxReview") && selectedExpense) {
     const linkedProject = projects.find((project) => project.id === selectedExpense.project_id);
     const receiptUrl = getExpenseReceiptUrl(selectedExpense);
+    const deviceId = getExpenseDeviceId(selectedExpense);
+    const deviceOwner = getDeviceOwnerName(deviceId, mobileDevices);
+    const visibleMemo = cleanExpenseMemo(selectedExpense.memo);
     return (
       <>
         <ModalHead title={selectedExpense.purpose} desc="지출결의 상세입니다. 증빙·결제수단·이체 내용을 확인하고 승인할 수 있습니다." onClose={onClose} />
@@ -4931,11 +5142,12 @@ function DetailModal({
           <Info label="이체 여부" value={selectedExpense.transfer_status || "-"} />
           <Info label="연결 프로젝트" value={linkedProject?.name || "미연결"} />
           <Info label="증빙 상태" value={selectedExpense.evidence_status || "-"} />
+          <Info label="업로드 담당자" value={deviceOwner || (deviceId ? "미등록 기기" : "-")} />
           <Info label="OCR 거래처" value={selectedExpense.ocr_vendor_name || "OCR 미실행/미인식"} />
           <Info label="OCR 금액" value={selectedExpense.ocr_total_amount ? formatWon(selectedExpense.ocr_total_amount) : "-"} />
           <Info label="파일" value={receiptUrl ? "첨부됨" : "없음"} />
           <Info label="이체 내용 요약" value={selectedExpense.transfer_summary || "-"} />
-          <Info label="메모" value={selectedExpense.memo || "-"} />
+          <Info label="메모" value={visibleMemo || "-"} />
         </div>
         {receiptUrl && (
           <div className="receipt-preview">
