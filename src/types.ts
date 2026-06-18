@@ -144,6 +144,7 @@ export type ExpenseRequest = {
   purpose: string;
   category?: ExpenseUsage | string | null;
   usage: ExpenseUsage;          // 사용 용도
+  usage_subcategory?: string | null; // 지출 소분류
   payment_method: PaymentMethod | null;
   card_id: string | null;       // 카드 결제 시 어떤 카드인지
   amount: number;

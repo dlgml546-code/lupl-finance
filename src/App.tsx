@@ -225,20 +225,25 @@ const usageGuide: Record<ExpenseUsage, string> = {
 };
 
 const expenseSubcategoryTree: Record<ExpenseUsage, string[]> = {
-  "여비·출장비": ["교통비", "유류비", "주차비", "택시비", "숙박비", "출장 식대", "출장 다과", "통행료", "기타 출장비"],
+  "여비·출장비": ["교통비", "출장 유류비", "주차비", "택시비", "숙박비", "출장 식대", "출장 다과", "통행료", "기타 출장비"],
   "업무 추진비": ["외부 미팅 식대", "외부 미팅 다과", "거래처 선물", "회의비", "접대비", "기타 업무추진비"],
   "내부 사업비": ["교육 재료비", "행사 다과", "행사 식대", "인쇄·출력", "운반비", "주차비", "촬영·편집", "작가·강사료", "기타 내부사업비"],
   "외부 사업비(외주용역)": ["외주 강사료", "외주 재료비", "외주 인쇄·출력", "외주 행사 다과", "외주 운반비", "외주 촬영·편집", "기타 외주용역비"],
   "복리후생비": ["직원 식대", "직원 간식", "회식비", "워크샵", "복지 소모품", "경조사", "기타 복리후생비"],
   "운영비": ["정기구독", "소모품", "사무용품", "서류 발급", "우편·택배", "통신비", "소프트웨어", "서버·도메인", "기타 운영비"],
-  "차량비": ["유류비", "차량 소모품", "정비비", "주차비", "통행료", "보험료", "기타 차량비"],
+  "차량비": ["차량 유류비", "차량 소모품", "정비비", "차량 주차비", "차량 통행료", "보험료", "기타 차량비"],
   "홍보비(광고비)": ["온라인 광고", "SNS 광고", "인쇄 홍보물", "촬영·콘텐츠", "홍보 대행", "기타 홍보비"],
   "자산취득비(비품 구입 등)": ["비품 구입", "장비 구입", "가구", "전자기기", "소프트웨어 라이선스", "기타 자산취득"]
 };
 
-const expenseSubcategoryToUsage = Object.fromEntries(
-  Object.entries(expenseSubcategoryTree).flatMap(([usage, items]) => items.map((item) => [item, usage as ExpenseUsage]))
-) as Record<string, ExpenseUsage>;
+const expenseSubcategoryToUsage = {
+  ...Object.fromEntries(
+    Object.entries(expenseSubcategoryTree).flatMap(([usage, items]) => items.map((item) => [item, usage as ExpenseUsage]))
+  ),
+  "유류비": "차량비",
+  "차량 주유": "차량비",
+  "출장 주유": "여비·출장비"
+} as Record<string, ExpenseUsage>;
 
 const ranks: Rank[] = ["대표", "본부장", "책임", "선임", "매니저"];
 const bonusRateOptions = ["5%", "10%", "15%", "20%", "30%"];
@@ -429,7 +434,14 @@ const mobileReceiptMemoLabels = [
   "영수증 보기",
   "OCR 원문",
   "등록 경로",
-  "묶음"
+  "묶음",
+  "지출 대분류",
+  "지출 소분류",
+  "사용용도",
+  "정기지출 대분류",
+  "반복주기",
+  "결제 방식",
+  "카드 뒷자리"
 ];
 
 function cleanExpenseMemo(memo: string | null | undefined) {
@@ -462,8 +474,8 @@ function getUsageFromExpenseSubcategory(subcategory: string | null | undefined, 
   return expenseSubcategoryToUsage[clean] || fallback;
 }
 
-function getExpenseSubcategoryLabel(expense: Pick<ExpenseRequest, "memo" | "usage" | "purpose">) {
-  return readMemoField(expense.memo, "지출 소분류") || readMemoField(expense.memo, "사용용도") || "";
+function getExpenseSubcategoryLabel(expense: Pick<ExpenseRequest, "memo" | "usage" | "purpose" | "usage_subcategory">) {
+  return expense.usage_subcategory || readMemoField(expense.memo, "지출 소분류") || readMemoField(expense.memo, "사용용도") || "";
 }
 
 function getExpenseUsageLabel(expense: Pick<ExpenseRequest, "usage" | "category" | "memo" | "is_recurring" | "recurring_cycle" | "evidence_status" | "review_reason" | "purpose">) {
@@ -1392,6 +1404,7 @@ export default function App() {
         used_at: String(formData.get("used_at") || today()),
         purpose,
         usage,
+        usage_subcategory: subcategory || null,
         category: toLegacyExpenseCategory(usage),
         payment_method: String(formData.get("payment_method") || "카드") as PaymentMethod,
         card_id: String(formData.get("card_id") || "") || null,
@@ -1443,6 +1456,7 @@ export default function App() {
   async function createRecurring(formData: FormData) {
     try {
       const usage = String(formData.get("usage") || "운영비") as ExpenseUsage;
+      const subcategory = expenseSubcategoryTree[usage]?.[0] || "";
       const memo = String(formData.get("memo") || "");
       const paymentMethod = String(formData.get("payment_method") || "카드") as PaymentMethod;
       const cardId = String(formData.get("card_id") || "") || null;
@@ -1457,6 +1471,7 @@ export default function App() {
         used_at: String(formData.get("used_at") || today()),
         purpose: String(formData.get("purpose") || "정기 구독"),
         usage,
+        usage_subcategory: subcategory || null,
         category: toLegacyExpenseCategory(usage),
         payment_method: paymentMethod,
         card_id: cardId,
@@ -1471,6 +1486,8 @@ export default function App() {
         is_recurring: true,
         recurring_cycle: recurringCycle,
         memo: [
+          `지출 대분류: ${usage}`,
+          subcategory ? `지출 소분류: ${subcategory}` : "",
           `정기지출 대분류: ${usage}`,
           `결제방식: ${paymentMethod}`,
           cardLabel ? `결제카드: ${cardLabel}` : "",
@@ -1609,6 +1626,7 @@ export default function App() {
         used_at: String(formData.get("used_at") || today()),
         purpose: String(formData.get("purpose") || "지출"),
         usage,
+        usage_subcategory: subcategory || null,
         category: toLegacyExpenseCategory(usage),
         payment_method: String(formData.get("payment_method") || "카드") as PaymentMethod,
         card_id: String(formData.get("card_id") || "") || null,
@@ -2296,6 +2314,7 @@ export default function App() {
             projects={projectsComputed}
             expenses={expenses}
             cards={cards}
+            mobileDevices={mobileDevices}
             onOpenExpense={(expense) => {
               setSelectedExpense(expense);
               setModal(expense.purpose.includes("강사") ? "taxReview" : "expenseReview");
@@ -2798,6 +2817,7 @@ function Expense({
   projects,
   expenses,
   cards,
+  mobileDevices,
   onOpenExpense,
   onCreate,
   onRecurring,
@@ -2807,6 +2827,7 @@ function Expense({
   projects: ProjectComputed[];
   expenses: ExpenseRequest[];
   cards: PaymentCard[];
+  mobileDevices: MobileReceiptDevice[];
   onOpenExpense: (expense: ExpenseRequest) => void;
   onCreate: () => void;
   onRecurring: () => void;
@@ -2994,11 +3015,13 @@ function Expense({
               <thead>
                 <tr>
                   <th style={{ width: 100 }}>사용일</th>
-                  <th style={{ width: 200 }}>목적 및 용도</th>
-                  <th style={{ width: 130 }}>사용 용도</th>
+                  <th style={{ width: 200 }}>목적</th>
+                  <th style={{ width: 120 }}>대분류</th>
+                  <th style={{ width: 130 }}>소분류</th>
                   <th style={{ width: 130 }}>결제방식</th>
                   <th style={{ width: 110 }} className="num">금액</th>
                   <th style={{ width: 120 }}>증빙</th>
+                  <th style={{ width: 110 }}>담당자</th>
                   <th style={{ width: 130 }}>이체 여부</th>
                   <th style={{ width: 90 }}>상태</th>
                 </tr>
@@ -3008,10 +3031,12 @@ function Expense({
                   <tr key={expense.id} className="clickable" onClick={() => onOpenExpense(expense)}>
                     <td>{expense.used_at}{isRecurringExpense(expense) ? " 반복" : ""}</td>
                     <td>{expense.purpose}</td>
-                    <td>{getExpenseUsageDisplay(expense)}</td>
+                    <td>{getExpenseUsageLabel(expense)}</td>
+                    <td>{getExpenseSubcategoryLabel(expense) || "-"}</td>
                     <td>{getExpensePaymentLabel(expense, cards)}</td>
                     <td className="num">{formatWon(expense.amount)}</td>
                     <td><span className={`chip ${getExpenseReceiptUrl(expense) ? "green" : "orange"}`}>{expense.evidence_status || "확인 필요"}</span></td>
+                    <td>{getDeviceOwnerName(getExpenseDeviceId(expense), mobileDevices) || (getExpenseDeviceId(expense) ? "미등록 기기" : "-")}</td>
                     <td>{expense.transfer_status}</td>
                     <td><span className={`chip ${expense.review_status === "승인" ? "green" : "orange"}`}>{expense.review_status}</span></td>
                   </tr>
@@ -5372,7 +5397,8 @@ function DetailModal({
         <div className="modal-info">
           <Info label="사용일" value={selectedExpense.used_at} className="important" />
           <Info label="금액" value={formatWon(selectedExpense.amount)} />
-          <Info label="사용 용도" value={getExpenseUsageDisplay(selectedExpense)} />
+          <Info label="지출 대분류" value={getExpenseUsageLabel(selectedExpense)} />
+          <Info label="지출 소분류" value={getExpenseSubcategoryLabel(selectedExpense) || "-"} />
           <Info label="결제방식" value={getExpensePaymentLabel(selectedExpense, cards)} />
           {isRecurringExpense(selectedExpense) && <Info label="반복 주기" value={getExpenseCycleLabel(selectedExpense)} />}
           <Info label="이체 여부" value={selectedExpense.transfer_status || "-"} />

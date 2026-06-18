@@ -1752,6 +1752,8 @@ input:focus, select:focus, textarea:focus {
 /* 섹션 툴바 (카드 관리 버튼 등) */
 .section-toolbar {
   display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
   justify-content: flex-end;
   margin-bottom: 14px;
 }
