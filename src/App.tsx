@@ -88,6 +88,20 @@ type MarginDraft = {
   proofReceipt: boolean;
   savedAt?: string;
 };
+type OperationsInsight = {
+  title: string;
+  value: string;
+  copy: string;
+  tone: "blue" | "green" | "orange" | "red" | "purple";
+  action?: SectionKey;
+};
+type CareEvent = {
+  person: string;
+  label: string;
+  dateLabel: string;
+  daysLeft: number;
+  tone: "green" | "orange" | "purple";
+};
 
 const sectionMeta: Record<SectionKey, { title: string; desc: string }> = {
   overview: {
@@ -248,6 +262,31 @@ function formatPercent(value: number | null | undefined) {
   return `${Math.round(Number(value || 0) * 100)}%`;
 }
 
+function normalizeDateToken(value: string) {
+  const token = value.trim().match(/\d{4}-\d{2}-\d{2}|\d{2}-\d{2}/)?.[0] || "";
+  return token;
+}
+
+function daysUntilAnnualDate(value: string, now = new Date()) {
+  const token = normalizeDateToken(value);
+  if (!token) return null;
+  const parts = token.split("-").map(Number);
+  const month = token.length === 10 ? parts[1] : parts[0];
+  const day = token.length === 10 ? parts[2] : parts[1];
+  if (!month || !day) return null;
+  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  let target = new Date(now.getFullYear(), month - 1, day);
+  if (target < todayStart) target = new Date(now.getFullYear() + 1, month - 1, day);
+  return Math.ceil((target.getTime() - todayStart.getTime()) / 86400000);
+}
+
+function shortAnnualDateLabel(value: string) {
+  const token = normalizeDateToken(value);
+  if (!token) return value;
+  const parts = token.split("-");
+  return token.length === 10 ? `${Number(parts[1])}/${Number(parts[2])}` : `${Number(parts[0])}/${Number(parts[1])}`;
+}
+
 function parseNumber(value: FormDataEntryValue | null) {
   if (value === null) return 0;
   return Number(String(value).replace(/[^0-9.-]/g, "")) || 0;
@@ -370,6 +409,14 @@ function looksLikeRecurringText(...values: Array<string | null | undefined>) {
 function readMemoField(memo: string | null | undefined, label: string) {
   const line = String(memo || "").split("\n").find((item) => item.trim().startsWith(`${label}:`));
   return line ? line.slice(label.length + 1).trim() : "";
+}
+
+function readAnyMemoField(memo: string | null | undefined, labels: string[]) {
+  for (const label of labels) {
+    const value = readMemoField(memo, label);
+    if (value) return value;
+  }
+  return "";
 }
 
 const mobileReceiptMemoLabels = [
@@ -2223,7 +2270,7 @@ export default function App() {
         </header>
 
         {section === "overview" && (
-          <Overview setSection={setSection} reviewCount={pendingReviews.length} cash={visibleCash} projects={projectsComputed} expenses={expenses} people={people} onAddCash={() => setModal("cashForm")} onOpenCashHistory={() => setModal("cashHistory")} />
+          <Overview setSection={setSection} reviewCount={pendingReviews.length} cash={visibleCash} projects={projectsComputed} expenses={expenses} people={people} cards={cards} onAddCash={() => setModal("cashForm")} onOpenCashHistory={() => setModal("cashHistory")} />
         )}
         {section === "review" && (
           <ReviewInbox
@@ -2453,6 +2500,7 @@ function Overview({
   projects,
   expenses,
   people,
+  cards,
   onAddCash,
   onOpenCashHistory
 }: {
@@ -2462,6 +2510,7 @@ function Overview({
   projects: ProjectComputed[];
   expenses: ExpenseRequest[];
   people: Person[];
+  cards: PaymentCard[];
   onAddCash: () => void;
   onOpenCashHistory: () => void;
 }) {
@@ -2488,6 +2537,58 @@ function Overview({
   const payable = expenses.filter((e) => e.review_status !== "승인").reduce((s, e) => s + Number(e.amount || 0), 0);
   const expectedMonthEndCash = currentCash != null ? Number(currentCash) + Number(receivable || 0) - Number(payable || 0) : 0;
   const flowMax = Math.max(Math.abs(receivable), Math.abs(payable), Math.abs(monthlyExpense), Math.abs(expectedMonthEndCash), 1);
+  const missingReceiptCount = expenses.filter((expense) => !getExpenseReceiptUrl(expense)).length;
+  const transferNeeded = expenses.filter((expense) => expense.transfer_status === "결제 필요");
+  const personalCardExpenses = expenses.filter((expense) => {
+    const card = getExpensePaymentLabel(expense, cards);
+    return card.includes("개인 카드") || card.includes("개인-") || String(expense.transfer_summary || "").includes("개인 카드");
+  });
+  const overdueReceivables = projects.filter((project) => {
+    if (project._receivable <= 0 || !project.payment_due_date) return false;
+    return project.payment_due_date < today();
+  });
+  const opsInsights: OperationsInsight[] = [
+    {
+      title: "AI 경영 알림",
+      value: `${reviewCount + overdueReceivables.length + transferNeeded.length}건`,
+      copy: `검토 ${reviewCount} · 미수 지연 ${overdueReceivables.length} · 이체요청 ${transferNeeded.length}`,
+      tone: reviewCount + overdueReceivables.length + transferNeeded.length > 0 ? "orange" : "green",
+      action: reviewCount > 0 ? "review" : overdueReceivables.length > 0 ? "revenue" : "expense"
+    },
+    {
+      title: "경비 자동화 품질",
+      value: `${Math.max(0, expenses.length - missingReceiptCount)}/${expenses.length || 0}`,
+      copy: `증빙 첨부율 ${expenses.length ? Math.round(((expenses.length - missingReceiptCount) / expenses.length) * 100) : 0}% · 누락 ${missingReceiptCount}건`,
+      tone: missingReceiptCount > 0 ? "red" : "green",
+      action: "expense"
+    },
+    {
+      title: "개인카드 정산",
+      value: formatWon(personalCardExpenses.reduce((sum, expense) => sum + Number(expense.amount || 0), 0)),
+      copy: `${personalCardExpenses.length}건 · 월말 일괄 정산 확인`,
+      tone: personalCardExpenses.length > 0 ? "purple" : "green",
+      action: "expense"
+    }
+  ];
+  const careEvents = people.flatMap<CareEvent>((person) => {
+    const items: CareEvent[] = [];
+    const birthday = readAnyMemoField(person.memo, ["생일", "birthday", "Birthday"]);
+    const familyEvent = readAnyMemoField(person.memo, ["경조사", "기념일", "가족행사"]);
+    if (birthday) {
+      const daysLeft = daysUntilAnnualDate(birthday);
+      if (daysLeft !== null && daysLeft <= 30) items.push({ person: person.name, label: "생일", dateLabel: shortAnnualDateLabel(birthday), daysLeft, tone: "purple" });
+    }
+    if (familyEvent) {
+      const daysLeft = daysUntilAnnualDate(familyEvent);
+      if (daysLeft !== null && daysLeft <= 45) items.push({ person: person.name, label: familyEvent.replace(normalizeDateToken(familyEvent), "").trim() || "경조사", dateLabel: shortAnnualDateLabel(familyEvent), daysLeft, tone: "orange" });
+    }
+    if (person.hire_date) {
+      const daysLeft = daysUntilAnnualDate(person.hire_date);
+      if (daysLeft !== null && daysLeft <= 30) items.push({ person: person.name, label: "입사기념일", dateLabel: shortAnnualDateLabel(person.hire_date), daysLeft, tone: "green" });
+    }
+    return items;
+  }).sort((a, b) => a.daysLeft - b.daysLeft).slice(0, 5);
+  const careMissing = people.filter((person) => person.is_active && !readAnyMemoField(person.memo, ["생일", "birthday", "Birthday", "경조사", "기념일", "가족행사"])).length;
 
   return (
     <section className="section active">
@@ -2571,6 +2672,53 @@ function Overview({
             </div>
           ) : (
             <EmptyState text="현금 현황·프로젝트·지출결의를 입력하면 이번 달 요약이 채워집니다." />
+          )}
+        </div>
+      </div>
+
+      <div className="grid three mt">
+        <div className="card solid ops-card">
+          <h2 className="card-title">AI 운영 알림</h2>
+          <p className="card-sub">현금, 미수, 검토, 지출 리스크를 자동으로 묶어 보여줍니다.</p>
+          <div className="ops-list">
+            {opsInsights.map((item) => (
+              <button className={`ops-item ${item.tone}`} key={item.title} type="button" onClick={() => setSection(item.action || "overview")}>
+                <span>{item.title}</span>
+                <strong>{item.value}</strong>
+                <em>{item.copy}</em>
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="card solid ops-card">
+          <h2 className="card-title">경비관리 자동화</h2>
+          <p className="card-sub">법인카드·개인카드·영수증 증빙·이체요청을 마감 전에 확인합니다.</p>
+          <div className="automation-grid">
+            <Metric title="증빙 누락" copy="영수증 파일 미첨부" value={`${missingReceiptCount}건`} />
+            <Metric title="이체 요청" copy="결제 필요 상태" value={`${transferNeeded.length}건`} />
+            <Metric title="정기 결제" copy="반복 지출 자동 감지" value={formatWon(expenses.filter(isRecurringExpense).reduce((sum, expense) => sum + Number(expense.amount || 0), 0))} />
+          </div>
+        </div>
+
+        <div className="card solid ops-card">
+          <h2 className="card-title">경조사·챙김</h2>
+          <p className="card-sub">직원 메모의 생일·경조사·입사기념일을 기준으로 챙길 일을 띄웁니다.</p>
+          {careEvents.length === 0 ? (
+            <div className="care-empty">
+              <strong>다가오는 일정 없음</strong>
+              <span>직원 메모에 `생일: 03-14`, `경조사: 2026-07-01 부모님 칠순`처럼 적으면 자동 표시됩니다.</span>
+              {careMissing > 0 && <em>{careMissing}명은 챙김 정보 미입력</em>}
+            </div>
+          ) : (
+            <div className="care-list">
+              {careEvents.map((event) => (
+                <div className={`care-item ${event.tone}`} key={`${event.person}-${event.label}-${event.dateLabel}`}>
+                  <div><strong>{event.person}</strong><span>{event.label} · {event.dateLabel}</span></div>
+                  <em>{event.daysLeft === 0 ? "오늘" : `D-${event.daysLeft}`}</em>
+                </div>
+              ))}
+            </div>
           )}
         </div>
       </div>
