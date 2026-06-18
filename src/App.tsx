@@ -193,7 +193,7 @@ const inflowRoutes = ["학교장터", "나라장터", "소개", "기존 고객",
 
 // 지출결의 기준 선택지
 const expenseUsages: ExpenseUsage[] = ["여비·출장비", "업무 추진비", "내부 사업비", "외부 사업비(외주용역)", "복리후생비", "운영비", "차량비", "홍보비(광고비)", "자산취득비(비품 구입 등)"];
-const paymentMethods: PaymentMethod[] = ["계좌이체", "현금", "카드", "네이버페이-현금", "기타결제 - 비즈머니 충전", "기타결제 - 와우프레스 충전"];
+const paymentMethods: PaymentMethod[] = ["법인 계좌이체", "계좌이체", "현금", "카드", "네이버페이-현금", "기타결제 - 비즈머니 충전", "기타결제 - 와우프레스 충전"];
 const transferStatuses: TransferStatus[] = ["결제 필요", "결제 완료", "이체 완료", "해당 없음"];
 const recurringUsageGroups: ExpenseUsage[] = ["운영비", "홍보비(광고비)", "복리후생비", "업무 추진비", "차량비", "내부 사업비", "외부 사업비(외주용역)", "자산취득비(비품 구입 등)", "여비·출장비"];
 
@@ -209,6 +209,22 @@ const usageGuide: Record<ExpenseUsage, string> = {
   "홍보비(광고비)": "광고·홍보 집행비",
   "자산취득비(비품 구입 등)": "비품·자산 구입비"
 };
+
+const expenseSubcategoryTree: Record<ExpenseUsage, string[]> = {
+  "여비·출장비": ["교통비", "유류비", "주차비", "택시비", "숙박비", "출장 식대", "출장 다과", "통행료", "기타 출장비"],
+  "업무 추진비": ["외부 미팅 식대", "외부 미팅 다과", "거래처 선물", "회의비", "접대비", "기타 업무추진비"],
+  "내부 사업비": ["교육 재료비", "행사 다과", "행사 식대", "인쇄·출력", "운반비", "주차비", "촬영·편집", "작가·강사료", "기타 내부사업비"],
+  "외부 사업비(외주용역)": ["외주 강사료", "외주 재료비", "외주 인쇄·출력", "외주 행사 다과", "외주 운반비", "외주 촬영·편집", "기타 외주용역비"],
+  "복리후생비": ["직원 식대", "직원 간식", "회식비", "워크샵", "복지 소모품", "경조사", "기타 복리후생비"],
+  "운영비": ["정기구독", "소모품", "사무용품", "서류 발급", "우편·택배", "통신비", "소프트웨어", "서버·도메인", "기타 운영비"],
+  "차량비": ["유류비", "차량 소모품", "정비비", "주차비", "통행료", "보험료", "기타 차량비"],
+  "홍보비(광고비)": ["온라인 광고", "SNS 광고", "인쇄 홍보물", "촬영·콘텐츠", "홍보 대행", "기타 홍보비"],
+  "자산취득비(비품 구입 등)": ["비품 구입", "장비 구입", "가구", "전자기기", "소프트웨어 라이선스", "기타 자산취득"]
+};
+
+const expenseSubcategoryToUsage = Object.fromEntries(
+  Object.entries(expenseSubcategoryTree).flatMap(([usage, items]) => items.map((item) => [item, usage as ExpenseUsage]))
+) as Record<string, ExpenseUsage>;
 
 const ranks: Rank[] = ["대표", "본부장", "책임", "선임", "매니저"];
 const bonusRateOptions = ["5%", "10%", "15%", "20%", "30%"];
@@ -383,14 +399,42 @@ function getExpenseDeviceId(expense: Pick<ExpenseRequest, "memo">) {
   return readMemoField(expense.memo, "기기 ID");
 }
 
+function stripExpenseSystemMemo(memo: string | null | undefined) {
+  return String(memo || "")
+    .split("\n")
+    .filter((line) => {
+      const trimmed = line.trim();
+      return !["지출 대분류:", "지출 소분류:", "사용용도:", "정기지출 대분류:", "반복주기:"].some((prefix) => trimmed.startsWith(prefix));
+    })
+    .join("\n")
+    .trim();
+}
+
+function getUsageFromExpenseSubcategory(subcategory: string | null | undefined, fallback: ExpenseUsage = "운영비") {
+  const clean = String(subcategory || "").trim();
+  return expenseSubcategoryToUsage[clean] || fallback;
+}
+
+function getExpenseSubcategoryLabel(expense: Pick<ExpenseRequest, "memo" | "usage" | "purpose">) {
+  return readMemoField(expense.memo, "지출 소분류") || readMemoField(expense.memo, "사용용도") || "";
+}
+
 function getExpenseUsageLabel(expense: Pick<ExpenseRequest, "usage" | "category" | "memo" | "is_recurring" | "recurring_cycle" | "evidence_status" | "review_reason" | "purpose">) {
   const memoUsage = readMemoField(expense.memo, "정기지출 대분류") || readMemoField(expense.memo, "사용용도");
+  const memoSubcategory = readMemoField(expense.memo, "지출 소분류");
   const raw = String(expense.usage || "").trim();
   const legacyCategory = String(expense.category || "").trim();
   if (raw && raw !== "미분류") return raw;
+  if (memoSubcategory) return getUsageFromExpenseSubcategory(memoSubcategory);
   if (legacyCategory && legacyCategory !== "미분류") return legacyCategory;
   if (memoUsage) return memoUsage;
   return isRecurringExpense(expense) ? "운영비" : "미분류";
+}
+
+function getExpenseUsageDisplay(expense: ExpenseRequest) {
+  const usage = getExpenseUsageLabel(expense);
+  const subcategory = getExpenseSubcategoryLabel(expense);
+  return subcategory ? `${usage} · ${subcategory}` : usage;
 }
 
 function getExpensePaymentLabel(expense: ExpenseRequest, cards: PaymentCard[]) {
@@ -1285,9 +1329,18 @@ export default function App() {
       }
 
       const purpose = String(formData.get("purpose") || ocrResult?.purpose || "영수증 지출");
-      const memo = String(formData.get("memo") || "");
-      const usage = String(formData.get("usage") || "운영비") as ExpenseUsage;
+      const memo = stripExpenseSystemMemo(String(formData.get("memo") || ""));
+      const requestedUsage = String(formData.get("usage") || "운영비") as ExpenseUsage;
+      const subcategory = String(formData.get("usage_subcategory") || "");
+      const usage = getUsageFromExpenseSubcategory(subcategory, requestedUsage);
       const quickRecurring = looksLikeRecurringText(purpose, memo, String(formData.get("transfer_summary") || ""));
+      const memoLines = [
+        `지출 대분류: ${usage}`,
+        subcategory ? `지출 소분류: ${subcategory}` : "",
+        quickRecurring ? `정기지출 대분류: ${usage}` : "",
+        quickRecurring ? "반복주기: 매월" : "",
+        memo
+      ].filter(Boolean).join("\n");
       const payload = {
         used_at: String(formData.get("used_at") || today()),
         purpose,
@@ -1310,7 +1363,7 @@ export default function App() {
         ocr_transaction_date: String(ocrResult?.transaction_date || "") || null,
         is_recurring: quickRecurring,
         recurring_cycle: quickRecurring ? "매월" : null,
-        memo: quickRecurring ? [`정기지출 대분류: ${usage}`, "반복주기: 매월", memo].filter(Boolean).join("\n") : memo
+        memo: memoLines
       };
 
       const { data, error } = await saveWithHealing<{ id: string; purpose: string; amount: number; review_reason: string | null }>("expense_requests", payload);
@@ -1501,12 +1554,15 @@ export default function App() {
       if (!expenseId) throw new Error("수정할 지출결의를 찾지 못했습니다.");
       const nextIsRecurring = formData.get("is_recurring") === "on";
       const nextRecurringCycle = String(formData.get("recurring_cycle") || (nextIsRecurring ? "매월" : ""));
-      const nextUsage = String(formData.get("usage") || "운영비") as ExpenseUsage;
+      const requestedUsage = String(formData.get("usage") || "운영비") as ExpenseUsage;
+      const subcategory = String(formData.get("usage_subcategory") || "");
+      const usage = getUsageFromExpenseSubcategory(subcategory, requestedUsage);
+      const plainMemo = stripExpenseSystemMemo(String(formData.get("memo") || ""));
       const payload = {
         used_at: String(formData.get("used_at") || today()),
         purpose: String(formData.get("purpose") || "지출"),
-        usage: nextUsage,
-        category: toLegacyExpenseCategory(nextUsage),
+        usage,
+        category: toLegacyExpenseCategory(usage),
         payment_method: String(formData.get("payment_method") || "카드") as PaymentMethod,
         card_id: String(formData.get("card_id") || "") || null,
         amount: parseNumber(formData.get("amount")),
@@ -1517,7 +1573,13 @@ export default function App() {
         recurring_cycle: nextRecurringCycle || null,
         is_recurring: nextIsRecurring,
         review_reason: nextIsRecurring ? "정기 구독/반복 지출 확인" : "대표 검토 필요",
-        memo: String(formData.get("memo") || "")
+        memo: [
+          `지출 대분류: ${usage}`,
+          subcategory ? `지출 소분류: ${subcategory}` : "",
+          nextIsRecurring ? `정기지출 대분류: ${usage}` : "",
+          nextIsRecurring ? `반복주기: ${nextRecurringCycle || "매월"}` : "",
+          plainMemo
+        ].filter(Boolean).join("\n")
       };
       const { error } = await updateWithHealing("expense_requests", payload, "id", expenseId);
       if (error) throw toFriendlyDbError(error, "지출결의를 수정하지 못했습니다.");
@@ -2656,7 +2718,7 @@ function Expense({
   const activeTopItems = [...activeDetail.items].sort((a, b) => Number(b.amount || 0) - Number(a.amount || 0)).slice(0, 6);
   const maxActiveAmount = Math.max(...activeTopItems.map((item) => Number(item.amount || 0)), 1);
   const usageBreakdown = Object.entries(activeDetail.items.reduce<Record<string, number>>((acc, item) => {
-    const key = getExpenseUsageLabel(item);
+    const key = getExpenseUsageDisplay(item);
     acc[key] = (acc[key] || 0) + Number(item.amount || 0);
     return acc;
   }, {})).sort((a, b) => b[1] - a[1]).slice(0, 5);
@@ -2697,10 +2759,10 @@ function Expense({
                   key={item.id}
                   onClick={() => onOpenExpense(item)}
                   style={{ flexBasis: `${share}%` }}
-                  title={`${item.purpose} · ${formatWon(item.amount)} · ${getExpenseUsageLabel(item)} · ${getExpensePaymentLabel(item, cards)}`}
+                  title={`${item.purpose} · ${formatWon(item.amount)} · ${getExpenseUsageDisplay(item)} · ${getExpensePaymentLabel(item, cards)}`}
                 >
                   <span className="recurring-purpose">{item.purpose}</span>
-                  <span>{getExpenseUsageLabel(item)} · {getExpenseCycleLabel(item)}</span>
+                  <span>{getExpenseUsageDisplay(item)} · {getExpenseCycleLabel(item)}</span>
                   <strong>{formatWon(item.amount)}</strong>
                 </button>
               );
@@ -2715,7 +2777,7 @@ function Expense({
                   <button type="button" className="expense-detail-row" key={item.id} onClick={() => onOpenExpense(item)}>
                     <div className="expense-detail-row-main">
                       <strong>{item.purpose}</strong>
-                      <span>{item.used_at}{isRecurringExpense(item) ? " · 정기" : ""} · {getExpenseUsageLabel(item)}</span>
+                      <span>{item.used_at}{isRecurringExpense(item) ? " · 정기" : ""} · {getExpenseUsageDisplay(item)}</span>
                       <div className="expense-bar-track"><div className={`expense-bar-fill ${activeDetail.tone}`} style={{ width: `${width}%` }} /></div>
                     </div>
                     <b>{formatWon(item.amount)}</b>
@@ -2762,7 +2824,7 @@ function Expense({
                 <div className="queue-item orange clickable" key={item.id} onClick={() => onOpenExpense(item)}>
                   <div>
                     <strong>{item.purpose}</strong>
-                    <span>{getExpenseUsageLabel(item)} · {item.payment_method}{item.card_id ? ` · ${cards.find((c) => c.id === item.card_id)?.label || ""}` : ""}</span>
+                    <span>{getExpenseUsageDisplay(item)} · {item.payment_method}{item.card_id ? ` · ${cards.find((c) => c.id === item.card_id)?.label || ""}` : ""}</span>
                   </div>
                   <div className="count">{formatWon(item.amount)}</div>
                 </div>
@@ -2798,7 +2860,7 @@ function Expense({
                   <tr key={expense.id} className="clickable" onClick={() => onOpenExpense(expense)}>
                     <td>{expense.used_at}{isRecurringExpense(expense) ? " 반복" : ""}</td>
                     <td>{expense.purpose}</td>
-                    <td>{getExpenseUsageLabel(expense)}</td>
+                    <td>{getExpenseUsageDisplay(expense)}</td>
                     <td>{getExpensePaymentLabel(expense, cards)}</td>
                     <td className="num">{formatWon(expense.amount)}</td>
                     <td><span className={`chip ${getExpenseReceiptUrl(expense) ? "green" : "orange"}`}>{expense.evidence_status || "확인 필요"}</span></td>
@@ -4193,7 +4255,15 @@ function ExpenseForm({
   }
 
   const usage = (answers.usage as ExpenseUsage) || "운영비";
+  const subcategories = expenseSubcategoryTree[usage] || expenseSubcategoryTree["운영비"];
+  const subcategory = answers.usage_subcategory || subcategories[0] || "";
   const method = (answers.payment_method as PaymentMethod) || "카드";
+
+  function setUsage(value: string) {
+    const nextUsage = value as ExpenseUsage;
+    const nextSubcategory = expenseSubcategoryTree[nextUsage]?.[0] || "";
+    setAnswers((prev) => ({ ...prev, usage: nextUsage, usage_subcategory: nextSubcategory }));
+  }
 
   const steps: WizardStep[] = [
     {
@@ -4214,13 +4284,17 @@ function ExpenseForm({
     },
     {
       key: "usage",
-      title: "사용 용도(카테고리)를 골라 주세요.",
+      title: "사용 용도 대분류와 소분류를 골라 주세요.",
       hint: usageGuide[usage] || categories.find((c) => c.name === usage)?.description || undefined,
       body: (
-        <select value={usage} onChange={(e) => setField("usage", e.target.value)}>
-          {expenseUsages.map((c) => <option key={c}>{c}</option>)}
-          {categories.filter((c) => !expenseUsages.includes(c.name as ExpenseUsage)).map((c) => <option key={c.id}>{c.name}</option>)}
-        </select>
+        <div className="wizard-stack">
+          <select value={usage} onChange={(e) => setUsage(e.target.value)}>
+            {expenseUsages.map((c) => <option key={c}>{c}</option>)}
+          </select>
+          <select value={subcategory} onChange={(e) => setField("usage_subcategory", e.target.value)}>
+            {subcategories.map((item) => <option key={item}>{item}</option>)}
+          </select>
+        </div>
       )
     },
     {
@@ -4234,6 +4308,11 @@ function ExpenseForm({
       title: "어떻게 결제했나요?",
       body: (
         <div className="wizard-stack">
+          <div className="shortcut-row">
+            <button type="button" className={method === "법인 계좌이체" ? "shortcut-chip active" : "shortcut-chip"} onClick={() => setAnswers((prev) => ({ ...prev, payment_method: "법인 계좌이체", transfer_status: "결제 완료", card_id: "" }))}>법인 계좌이체</button>
+            <button type="button" className={method === "카드" ? "shortcut-chip active" : "shortcut-chip"} onClick={() => setAnswers((prev) => ({ ...prev, payment_method: "카드", transfer_status: "결제 완료" }))}>카드</button>
+            <button type="button" className={method === "계좌이체" ? "shortcut-chip active" : "shortcut-chip"} onClick={() => setAnswers((prev) => ({ ...prev, payment_method: "계좌이체", transfer_status: "결제 필요", card_id: "" }))}>일반 계좌이체</button>
+          </div>
           <select value={method} onChange={(e) => setField("payment_method", e.target.value)}>{paymentMethods.map((m) => <option key={m}>{m}</option>)}</select>
           {method === "카드" && (
             <select value={answers.card_id || ""} onChange={(e) => setField("card_id", e.target.value)}>
@@ -4281,6 +4360,7 @@ function ExpenseForm({
   async function submit() {
     const formData = new FormData();
     Object.entries(answers).forEach(([key, value]) => formData.append(key, value));
+    if (!formData.get("usage_subcategory")) formData.append("usage_subcategory", subcategory);
     if (file) formData.append("receipt", file);
     setBusy(true);
     setMessage("");
@@ -4304,7 +4384,7 @@ function ExpenseForm({
       message={message}
       submitLabel="지출결의 등록"
       summaryPrimary={answers.purpose || "목적 미입력"}
-      summarySecondary={`${answers.usage || "운영비"} · ${answers.amount || "0"}원`}
+      summarySecondary={`${answers.usage || "운영비"} · ${answers.usage_subcategory || subcategory} · ${answers.amount || "0"}원`}
       onSubmit={submit}
       onClose={onClose}
     />
@@ -4323,8 +4403,15 @@ function ExpenseEditForm({
 }) {
   const [busy, setBusy] = useState(false);
   const [method, setMethod] = useState<PaymentMethod>((expense.payment_method || "카드") as PaymentMethod);
+  const [usage, setUsageValue] = useState<ExpenseUsage>((expense.usage || "운영비") as ExpenseUsage);
+  const [subcategory, setSubcategory] = useState(getExpenseSubcategoryLabel(expense) || expenseSubcategoryTree[(expense.usage || "운영비") as ExpenseUsage]?.[0] || "");
   const [isRecurring, setIsRecurring] = useState(Boolean(expense.is_recurring));
-  const currentUsage = String(expense.usage || expense.category || "운영비");
+  const subcategories = expenseSubcategoryTree[usage] || expenseSubcategoryTree["운영비"];
+  function setEditUsage(value: string) {
+    const nextUsage = value as ExpenseUsage;
+    setUsageValue(nextUsage);
+    setSubcategory(expenseSubcategoryTree[nextUsage]?.[0] || "");
+  }
   return (
     <>
       <ModalHead title="지출결의 수정" desc="관리자는 정기구독 금액을 포함해 지출결의 원본 내용을 수정할 수 있습니다." onClose={onClose} />
@@ -4344,7 +4431,8 @@ function ExpenseEditForm({
         <input type="hidden" name="evidence_status" value={expense.evidence_status || "증빙 필요"} />
         <label>사용일<input type="date" name="used_at" defaultValue={expense.used_at || today()} /></label>
         <label>목적/항목명<input name="purpose" defaultValue={expense.purpose} required /></label>
-        <label>사용 용도<select name="usage" defaultValue={currentUsage}>{expenseUsages.map((c) => <option key={c}>{c}</option>)}{currentUsage && !expenseUsages.includes(currentUsage as ExpenseUsage) && <option>{currentUsage}</option>}{categories.filter((c) => !expenseUsages.includes(c.name as ExpenseUsage)).map((c) => <option key={c.id}>{c.name}</option>)}</select></label>
+        <label>사용 용도 대분류<select name="usage" value={usage} onChange={(event) => setEditUsage(event.target.value)}>{expenseUsages.map((c) => <option key={c}>{c}</option>)}</select></label>
+        <label>사용 용도 소분류<select name="usage_subcategory" value={subcategory} onChange={(event) => setSubcategory(event.target.value)}>{subcategories.map((item) => <option key={item}>{item}</option>)}</select></label>
         <label>금액<input className="money-input" name="amount" defaultValue={formatMoneyInputValue(String(expense.amount || ""))} onInput={handleMoneyInput} inputMode="numeric" required /></label>
         <label>결제방식<select name="payment_method" value={method} onChange={(event) => setMethod(event.target.value as PaymentMethod)}>{paymentMethods.map((m) => <option key={m}>{m}</option>)}</select></label>
         {method === "카드" && <label>카드<select name="card_id" defaultValue={expense.card_id || ""}><option value="">카드 선택</option>{cards.map((c) => <option key={c.id} value={c.id}>{c.label}</option>)}</select></label>}
@@ -4353,7 +4441,7 @@ function ExpenseEditForm({
         <label className="check-label"><input type="checkbox" name="is_recurring" checked={isRecurring} onChange={(event) => setIsRecurring(event.target.checked)} /><span>정기 결제 항목</span></label>
         {isRecurring && <label>반복 주기<select name="recurring_cycle" defaultValue={expense.recurring_cycle || "매월"}><option>매월</option><option>매분기</option><option>매년</option></select></label>}
         <label className="wide">이체 내용 요약<textarea name="transfer_summary" defaultValue={expense.transfer_summary || ""} /></label>
-        <label className="wide">메모<textarea name="memo" defaultValue={expense.memo || ""} /></label>
+        <label className="wide">메모<textarea name="memo" defaultValue={stripExpenseSystemMemo(expense.memo)} /></label>
         <div className="modal-actions">
           <button className="btn" type="button" onClick={onClose}>닫기</button>
           <button className="btn blue" disabled={busy}>{busy ? "저장 중" : "수정 저장"}</button>
@@ -5136,7 +5224,7 @@ function DetailModal({
         <div className="modal-info">
           <Info label="사용일" value={selectedExpense.used_at} className="important" />
           <Info label="금액" value={formatWon(selectedExpense.amount)} />
-          <Info label="사용 용도" value={getExpenseUsageLabel(selectedExpense)} />
+          <Info label="사용 용도" value={getExpenseUsageDisplay(selectedExpense)} />
           <Info label="결제방식" value={getExpensePaymentLabel(selectedExpense, cards)} />
           {isRecurringExpense(selectedExpense) && <Info label="반복 주기" value={getExpenseCycleLabel(selectedExpense)} />}
           <Info label="이체 여부" value={selectedExpense.transfer_status || "-"} />

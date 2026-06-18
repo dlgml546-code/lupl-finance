@@ -17,6 +17,7 @@ export type ExpenseUsage =
 
 // 결제방식 (노션 기준)
 export type PaymentMethod =
+  | "법인 계좌이체"
   | "계좌이체"
   | "현금"
   | "카드"
