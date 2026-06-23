@@ -1,5 +1,5 @@
 export type Rank = "대표" | "본부장" | "책임" | "선임" | "매니저";
-export type DepartmentName = "홍보마케팅부" | "경영지원부" | "AI부" | "개발부";
+export type DepartmentName = "홍보마케팅부" | "경영지원부" | "AI부" | "개발부" | "디자인부";
 export type ReviewStatus = "검토 전" | "승인" | "보류" | "수정 요청" | "반려";
 export type PermissionLevel = "보기만 가능" | "입력 가능" | "승인 가능" | "관리자";
 

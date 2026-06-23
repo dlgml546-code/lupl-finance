@@ -16,7 +16,7 @@ begin
     create type public.lupl_rank as enum ('대표','본부장','책임','선임','매니저');
   end if;
   if not exists (select 1 from pg_type where typname = 'department_name') then
-    create type public.department_name as enum ('홍보마케팅부','경영지원부','AI부','개발부');
+    create type public.department_name as enum ('홍보마케팅부','경영지원부','AI부','개발부','디자인부');
   end if;
   if not exists (select 1 from pg_type where typname = 'review_status') then
     create type public.review_status as enum ('검토 전','승인','보류','수정 요청','반려');
@@ -25,6 +25,8 @@ begin
     create type public.permission_level as enum ('보기만 가능','입력 가능','승인 가능','관리자');
   end if;
 end $$;
+
+alter type public.department_name add value if not exists '디자인부';
 
 create table if not exists public.departments (
   id uuid primary key default gen_random_uuid(),
@@ -294,7 +296,8 @@ insert into public.departments (name, description) values
 ('홍보마케팅부','브랜드, 홍보, 콘텐츠, 캠페인'),
 ('경영지원부','재무, 계약, 증빙, 정산, 행정'),
 ('AI부','AI 교육, 커리큘럼, 창작 지원'),
-('개발부','플랫폼, 데이터, 자동화, 배포')
+('개발부','플랫폼, 데이터, 자동화, 배포'),
+('디자인부','브랜드 디자인, 시각 자료, UX/UI')
 on conflict (name) do nothing;
 
 -- 노션 기준 결제수단 시드 (법인 + 개인 소유자)
