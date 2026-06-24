@@ -16,6 +16,7 @@ drop table if exists public.page_permissions cascade;
 drop table if exists public.people cascade;
 drop table if exists public.departments cascade;
 drop table if exists public.cash_snapshots cascade;
+drop table if exists public.financial_monthly_plans cascade;
 
 drop type if exists public.expense_category cascade;
 drop type if exists public.business_category cascade;
@@ -105,6 +106,15 @@ alter table if exists public.business_projects add column if not exists project_
 alter table if exists public.business_projects add column if not exists project_middle_category text;
 alter table if exists public.business_projects add column if not exists project_small_category text;
 alter table if exists public.business_projects add column if not exists operator_label text;
+alter table if exists public.business_projects add column if not exists revenue_recognition_date date;
+alter table if exists public.business_projects add column if not exists received_date date;
+alter table if exists public.business_projects add column if not exists revenue_tax_mode text;
+alter table if exists public.expense_requests add column if not exists usage_subcategory text;
+alter table if exists public.expense_requests add column if not exists cost_behavior text;
+alter table if exists public.expense_requests add column if not exists tax_mode text;
+alter table if exists public.expense_requests add column if not exists supply_amount numeric(14,0) default 0;
+alter table if exists public.expense_requests add column if not exists vat_amount numeric(14,0) default 0;
+alter table if exists public.expense_requests add column if not exists paid_at date;
 alter table if exists public.cash_snapshots add column if not exists account_details jsonb default '[]'::jsonb;
 alter table if exists public.cash_snapshots add column if not exists transfer_details jsonb default '[]'::jsonb;
 
@@ -163,6 +173,9 @@ create table if not exists public.business_projects (
   due_date date,
   payment_due_date date,            -- 입금 예정일
   tax_invoice_date date,            -- 세금계산서 발행일
+  revenue_recognition_date date,
+  received_date date,
+  revenue_tax_mode text,
   repeat_client boolean default false,
   owner_id uuid references public.people(id) on delete set null,
   pm_id uuid references public.people(id) on delete set null,
@@ -177,9 +190,15 @@ create table if not exists public.expense_requests (
   used_at date not null default current_date,
   purpose text not null,
   usage text not null default '운영비',           -- 사용 용도(노션 기준)
+  usage_subcategory text,
   payment_method text,                            -- 결제방식(노션 기준)
   card_id uuid references public.payment_cards(id) on delete set null,
   amount numeric(14,0) not null default 0,
+  cost_behavior text,
+  tax_mode text,
+  supply_amount numeric(14,0) default 0,
+  vat_amount numeric(14,0) default 0,
+  paid_at date,
   evidence_status text,
   transfer_status text,                           -- 이체 여부(노션 기준)
   transfer_summary text,                          -- 이체 내용 요약
@@ -278,6 +297,23 @@ create table if not exists public.cash_snapshots (
   updated_at timestamptz not null default now()
 );
 
+create table if not exists public.financial_monthly_plans (
+  id uuid primary key default gen_random_uuid(),
+  period_month date not null unique,
+  planned_revenue numeric(14,0) default 0,
+  planned_variable_cost numeric(14,0) default 0,
+  planned_fixed_cost numeric(14,0) default 0,
+  planned_capex numeric(14,0) default 0,
+  planned_receivable numeric(14,0) default 0,
+  planned_payable numeric(14,0) default 0,
+  opening_cash numeric(14,0) default 0,
+  sales_quantity numeric(14,2) default 0,
+  average_unit_price numeric(14,0) default 0,
+  note text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
 -- updated_at 트리거
 do $$
 declare tbl text;
@@ -285,7 +321,7 @@ begin
   foreach tbl in array array[
     'departments','people','business_projects','expense_requests',
     'review_items','compensation_reviews','bonus_payments',
-    'project_labor_allocations','cash_snapshots'
+    'project_labor_allocations','cash_snapshots','financial_monthly_plans'
   ]
   loop
     execute format('drop trigger if exists trg_%I_updated_at on public.%I', tbl, tbl);
@@ -350,6 +386,7 @@ alter table public.compensation_reviews enable row level security;
 alter table public.bonus_payments enable row level security;
 alter table public.project_labor_allocations enable row level security;
 alter table public.cash_snapshots enable row level security;
+alter table public.financial_monthly_plans enable row level security;
 
 do $$
 declare tbl text;
@@ -357,7 +394,7 @@ begin
   foreach tbl in array array[
     'departments','people','page_permissions','payment_cards','expense_categories',
     'business_projects','expense_requests','review_items','compensation_reviews',
-    'bonus_payments','project_labor_allocations','cash_snapshots'
+    'bonus_payments','project_labor_allocations','cash_snapshots','financial_monthly_plans'
   ]
   loop
     execute format('drop policy if exists "authenticated full access" on public.%I', tbl);

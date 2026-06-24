@@ -132,6 +132,9 @@ export type BusinessProject = {
   due_date: string | null;
   payment_due_date: string | null;  // 입금 예정일
   tax_invoice_date: string | null;
+  revenue_recognition_date?: string | null; // 손익계산서에 매출로 잡는 날
+  received_date?: string | null; // 실제 통장 입금일
+  revenue_tax_mode?: string | null; // 부가세 포함 / 면세·부가세 없음
   repeat_client: boolean;
   owner_id: string | null;
   pm_id: string | null;
@@ -148,6 +151,11 @@ export type ExpenseRequest = {
   payment_method: PaymentMethod | null;
   card_id: string | null;       // 카드 결제 시 어떤 카드인지
   amount: number;
+  cost_behavior?: "고정비" | "변동비" | null;
+  tax_mode?: string | null;
+  supply_amount?: number | null;
+  vat_amount?: number | null;
+  paid_at?: string | null;
   evidence_status: string | null;
   transfer_status: TransferStatus | null;
   transfer_summary: string | null;  // 이체 내용 요약
@@ -231,4 +239,21 @@ export type CashSnapshot = {
   payable_amount: number | null;
   account_details?: Array<{ bank: string; label: string; balance: number }> | string | null;
   transfer_details?: Array<{ purpose: string; amount: number; date: string; memo: string }> | string | null;
+};
+
+export type FinancialMonthlyPlan = {
+  id: string;
+  period_month: string;
+  planned_revenue: number | null;
+  planned_variable_cost: number | null;
+  planned_fixed_cost: number | null;
+  planned_capex: number | null;
+  planned_receivable: number | null;
+  planned_payable: number | null;
+  opening_cash: number | null;
+  sales_quantity: number | null;
+  average_unit_price: number | null;
+  note: string | null;
+  created_at?: string;
+  updated_at?: string;
 };

@@ -12,6 +12,7 @@ import {
   Upload
 } from "lucide-react";
 import { isSupabaseConfigured, supabase } from "./lib/supabase";
+import FinancePlanning from "./FinancePlanning";
 import type {
   BonusPayment,
   BusinessProject,
@@ -22,6 +23,7 @@ import type {
   ExpenseCategoryItem,
   ExpenseRequest,
   ExpenseUsage,
+  FinancialMonthlyPlan,
   MobileReceiptDevice,
   PagePermission,
   PaymentCard,
@@ -40,6 +42,7 @@ import "./styles.css";
 
 type SectionKey =
   | "overview"
+  | "finance"
   | "review"
   | "expense"
   | "revenue"
@@ -108,6 +111,10 @@ const sectionMeta: Record<SectionKey, { title: string; desc: string }> = {
     title: "경영현황",
     desc: "현재 현금, 이번 달 매출, 직원 월급 포함 지출, 현금소진액을 한눈에 봅니다. 데이터를 입력하면 지표가 채워집니다."
   },
+  finance: {
+    title: "재무계획·회계",
+    desc: "월별 손익, 현금흐름, 계획 대비 실적과 손익분기점을 쉬운 설명과 함께 확인합니다."
+  },
   review: {
     title: "대표 검토함",
     desc: "지출결의, 사업·매출, 인건비, 인력투입, 권한 요청까지 대표가 검토할 항목을 한곳에 모읍니다."
@@ -140,6 +147,7 @@ const sectionMeta: Record<SectionKey, { title: string; desc: string }> = {
 
 const menu: Array<{ key: SectionKey; label: string }> = [
   { key: "overview", label: "경영현황" },
+  { key: "finance", label: "재무계획·회계" },
   { key: "review", label: "대표 검토함" },
   { key: "expense", label: "지출결의" },
   { key: "revenue", label: "사업·매출관리" },
@@ -151,6 +159,7 @@ const menu: Array<{ key: SectionKey; label: string }> = [
 
 const pageKeyMap: Record<SectionKey, string> = {
   overview: "overview",
+  finance: "finance",
   review: "review",
   expense: "expense",
   revenue: "revenue",
@@ -441,7 +450,12 @@ const mobileReceiptMemoLabels = [
   "정기지출 대분류",
   "반복주기",
   "결제 방식",
-  "카드 뒷자리"
+  "카드 뒷자리",
+  "비용 성격",
+  "부가세 처리",
+  "공급가액",
+  "부가세",
+  "실제 지급일"
 ];
 
 function cleanExpenseMemo(memo: string | null | undefined) {
@@ -463,7 +477,10 @@ function stripExpenseSystemMemo(memo: string | null | undefined) {
     .split("\n")
     .filter((line) => {
       const trimmed = line.trim();
-      return !["지출 대분류:", "지출 소분류:", "사용용도:", "정기지출 대분류:", "반복주기:"].some((prefix) => trimmed.startsWith(prefix));
+      return ![
+        "지출 대분류:", "지출 소분류:", "사용용도:", "정기지출 대분류:", "반복주기:",
+        "비용 성격:", "부가세 처리:", "공급가액:", "부가세:", "실제 지급일:"
+      ].some((prefix) => trimmed.startsWith(prefix));
     })
     .join("\n")
     .trim();
@@ -550,6 +567,9 @@ function buildProjectMemoLines(payload: {
   paymentDueDate: string;
   dueDate: string;
   taxInvoiceDate: string;
+  revenueRecognitionDate: string;
+  receivedDate: string;
+  revenueTaxMode: string;
   repeatClient: boolean;
   monthlyPaymentMemo: string;
   plainMemo: string;
@@ -570,6 +590,9 @@ function buildProjectMemoLines(payload: {
     payload.paymentDueDate ? `입금 예정일: ${payload.paymentDueDate}` : "",
     payload.dueDate ? `마감 날짜: ${payload.dueDate}` : "",
     payload.taxInvoiceDate ? `세금계산서 발행일: ${payload.taxInvoiceDate}` : "",
+    payload.revenueRecognitionDate ? `매출 인식일: ${payload.revenueRecognitionDate}` : "",
+    payload.receivedDate ? `실제 입금일: ${payload.receivedDate}` : "",
+    payload.revenueTaxMode ? `매출 부가세 처리: ${payload.revenueTaxMode}` : "",
     `반복 가능 고객: ${payload.repeatClient ? "예" : "아니오"}`,
     payload.monthlyPaymentMemo,
     payload.plainMemo
@@ -611,7 +634,8 @@ function getProjectPlainMemo(project: BusinessProject) {
     .filter((line) => ![
       "프로젝트 분류:", "거래처/기관명:", "거래처 구분:", "상태:", "확정 금액:", "수령 금액:", "수기 비용:",
       "책임자:", "실무 담당자:", "실무 담당자 연락처:", "유입 경로:", "대금 수령 상태:", "입금 예정일:",
-      "마감 날짜:", "세금계산서 발행일:", "반복 가능 고객:", "입금 예정:"
+      "마감 날짜:", "세금계산서 발행일:", "매출 인식일:", "실제 입금일:", "매출 부가세 처리:",
+      "반복 가능 고객:", "입금 예정:"
     ].some((prefix) => line.startsWith(prefix)))
     .join("\n")
     .trim();
@@ -718,6 +742,37 @@ const draftStore = {
   }
 };
 
+const financePlanBackupKey = "lupl.financialMonthlyPlans.v1";
+
+function readFinancePlanBackup(): FinancialMonthlyPlan[] {
+  try {
+    const raw = window.localStorage.getItem(financePlanBackupKey);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed as FinancialMonthlyPlan[] : [];
+  } catch {
+    return [];
+  }
+}
+
+function inferExpenseCostBehavior(usage: string, projectId = ""): "고정비" | "변동비" {
+  if (projectId || ["내부 사업비", "외부 사업비(외주용역)", "여비·출장비"].includes(usage)) return "변동비";
+  return "고정비";
+}
+
+function calculateExpenseTax(amount: number, taxMode: string) {
+  if (taxMode !== "부가세 포함") return { supplyAmount: amount, vatAmount: 0 };
+  const supplyAmount = Math.round(amount / 1.1);
+  return { supplyAmount, vatAmount: amount - supplyAmount };
+}
+
+function writeFinancePlanBackup(plans: FinancialMonthlyPlan[]) {
+  try {
+    window.localStorage.setItem(financePlanBackupKey, JSON.stringify(plans));
+  } catch {
+    /* local backup is best-effort */
+  }
+}
+
 function formatPhoneNumber(value: string) {
   const digits = value.replace(/[^0-9]/g, "").slice(0, 11);
   if (digits.length <= 3) return digits;
@@ -811,6 +866,8 @@ export default function App() {
   const [bonuses, setBonuses] = useState<BonusPayment[]>([]);
   const [labor, setLabor] = useState<ProjectLaborAllocation[]>([]);
   const [cash, setCash] = useState<CashSnapshot[]>([]);
+  const [financePlans, setFinancePlans] = useState<FinancialMonthlyPlan[]>([]);
+  const [financePlanTableReady, setFinancePlanTableReady] = useState(true);
   const [mobileDevices, setMobileDevices] = useState<MobileReceiptDevice[]>([]);
   const [mobileDeviceTableReady, setMobileDeviceTableReady] = useState(true);
 
@@ -965,6 +1022,18 @@ export default function App() {
         setMobileDeviceTableReady(true);
         setMobileDevices((mobileDevicesRes.data || []) as MobileReceiptDevice[]);
       }
+
+      const financePlansRes = await supabase.from("financial_monthly_plans").select("*").order("period_month");
+      if (financePlansRes.error) {
+        console.warn("financial_monthly_plans not ready", financePlansRes.error);
+        setFinancePlanTableReady(false);
+        setFinancePlans(readFinancePlanBackup());
+      } else {
+        setFinancePlanTableReady(true);
+        const loadedPlans = (financePlansRes.data || []) as FinancialMonthlyPlan[];
+        setFinancePlans(loadedPlans);
+        writeFinancePlanBackup(loadedPlans);
+      }
     } catch (error) {
       console.error(error);
       showToast(error instanceof Error ? error.message : "데이터를 불러오지 못했습니다.", "err");
@@ -1015,6 +1084,47 @@ export default function App() {
     await supabase.auth.signOut();
     setCurrentPerson(null);
     setUserEmail(null);
+  }
+
+  async function saveFinancePlan(formData: FormData) {
+    const periodMonth = String(formData.get("period_month") || "");
+    if (!periodMonth) throw new Error("계획을 저장할 월을 선택해 주세요.");
+    const payload = {
+      period_month: periodMonth,
+      planned_revenue: parseNumber(formData.get("planned_revenue")),
+      planned_variable_cost: parseNumber(formData.get("planned_variable_cost")),
+      planned_fixed_cost: parseNumber(formData.get("planned_fixed_cost")),
+      planned_capex: parseNumber(formData.get("planned_capex")),
+      planned_receivable: parseNumber(formData.get("planned_receivable")),
+      planned_payable: parseNumber(formData.get("planned_payable")),
+      opening_cash: parseNumber(formData.get("opening_cash")),
+      sales_quantity: parseNumber(formData.get("sales_quantity")),
+      average_unit_price: parseNumber(formData.get("average_unit_price")),
+      note: String(formData.get("note") || "") || null
+    };
+
+    if (!financePlanTableReady) {
+      const existing = financePlans.find((item) => String(item.period_month).slice(0, 7) === periodMonth.slice(0, 7));
+      const nextPlan = {
+        ...payload,
+        id: existing?.id || crypto.randomUUID(),
+        updated_at: new Date().toISOString()
+      } as FinancialMonthlyPlan;
+      const nextPlans = [...financePlans.filter((item) => item.id !== nextPlan.id), nextPlan]
+        .sort((a, b) => a.period_month.localeCompare(b.period_month));
+      setFinancePlans(nextPlans);
+      writeFinancePlanBackup(nextPlans);
+      showToast("재무계획을 이 브라우저에 임시저장했습니다.", "warn");
+      return;
+    }
+
+    const { data, error } = await saveWithHealing<FinancialMonthlyPlan>("financial_monthly_plans", payload, {
+      upsert: { onConflict: "period_month" }
+    });
+    if (error) throw toFriendlyDbError(error, "월별 재무계획 저장에 실패했습니다.");
+    if (!data) throw new Error("월별 재무계획 저장 결과를 받지 못했습니다.");
+    showToast("월별 재무계획을 저장했습니다.");
+    await loadAll();
   }
 
   async function createReviewItem(payload: Omit<ReviewItem, "id">) {
@@ -1087,6 +1197,9 @@ export default function App() {
       const paymentDueDate = String(formData.get("payment_due_date") || "") || "";
       const dueDate = String(formData.get("due_date") || "") || "";
       const taxInvoiceDate = String(formData.get("tax_invoice_date") || "") || "";
+      const revenueRecognitionDate = String(formData.get("revenue_recognition_date") || "") || "";
+      const receivedDate = String(formData.get("received_date") || "") || "";
+      const revenueTaxMode = String(formData.get("revenue_tax_mode") || "부가세 포함");
       const repeatClient = formData.get("repeat_client") === "on";
       const projectMemo = buildProjectMemoLines({
         categoryMemo,
@@ -1104,6 +1217,9 @@ export default function App() {
         paymentDueDate,
         dueDate,
         taxInvoiceDate,
+        revenueRecognitionDate,
+        receivedDate,
+        revenueTaxMode,
         repeatClient,
         monthlyPaymentMemo,
         plainMemo
@@ -1129,6 +1245,9 @@ export default function App() {
         payment_due_date: paymentDueDate || null,
         due_date: dueDate || null,
         tax_invoice_date: taxInvoiceDate || null,
+        revenue_recognition_date: revenueRecognitionDate || null,
+        received_date: receivedDate || null,
+        revenue_tax_mode: revenueTaxMode || null,
         repeat_client: repeatClient,
         owner_id: currentPerson?.id || null,
         memo: projectMemo
@@ -1162,7 +1281,10 @@ export default function App() {
               receipt_status: `대금 수령 상태: ${receiptStatus}`,
               payment_due_date: `입금 예정일: ${paymentDueDate}`,
               due_date: `마감 날짜: ${dueDate}`,
-              tax_invoice_date: `세금계산서 발행일: ${taxInvoiceDate}`
+              tax_invoice_date: `세금계산서 발행일: ${taxInvoiceDate}`,
+              revenue_recognition_date: `매출 인식일: ${revenueRecognitionDate}`,
+              received_date: `실제 입금일: ${receivedDate}`,
+              revenue_tax_mode: `매출 부가세 처리: ${revenueTaxMode}`
             }
           }
         );
@@ -1247,6 +1369,9 @@ export default function App() {
       const paymentDueDate = String(formData.get("payment_due_date") || "") || "";
       const dueDate = String(formData.get("due_date") || "") || "";
       const taxInvoiceDate = String(formData.get("tax_invoice_date") || "") || "";
+      const revenueRecognitionDate = String(formData.get("revenue_recognition_date") || "") || "";
+      const receivedDate = String(formData.get("received_date") || "") || "";
+      const revenueTaxMode = String(formData.get("revenue_tax_mode") || "부가세 포함");
       const repeatClient = formData.get("repeat_client") === "on";
       const projectMemo = buildProjectMemoLines({
         categoryMemo,
@@ -1264,6 +1389,9 @@ export default function App() {
         paymentDueDate,
         dueDate,
         taxInvoiceDate,
+        revenueRecognitionDate,
+        receivedDate,
+        revenueTaxMode,
         repeatClient,
         monthlyPaymentMemo,
         plainMemo
@@ -1288,6 +1416,9 @@ export default function App() {
         payment_due_date: paymentDueDate || null,
         due_date: dueDate || null,
         tax_invoice_date: taxInvoiceDate || null,
+        revenue_recognition_date: revenueRecognitionDate || null,
+        received_date: receivedDate || null,
+        revenue_tax_mode: revenueTaxMode || null,
         repeat_client: repeatClient,
         memo: projectMemo
       };
@@ -1392,12 +1523,23 @@ export default function App() {
       const requestedUsage = String(formData.get("usage") || "운영비") as ExpenseUsage;
       const subcategory = String(formData.get("usage_subcategory") || "");
       const usage = getUsageFromExpenseSubcategory(subcategory, requestedUsage);
+      const projectId = String(formData.get("project_id") || "");
+      const amount = parseNumber(formData.get("amount")) || Number(ocrResult?.total_amount || 0);
+      const costBehavior = String(formData.get("cost_behavior") || inferExpenseCostBehavior(usage, projectId)) as "고정비" | "변동비";
+      const taxMode = String(formData.get("tax_mode") || "부가세 포함");
+      const paidAt = String(formData.get("paid_at") || formData.get("used_at") || today());
+      const { supplyAmount, vatAmount } = calculateExpenseTax(amount, taxMode);
       const quickRecurring = looksLikeRecurringText(purpose, memo, String(formData.get("transfer_summary") || ""));
       const memoLines = [
         `지출 대분류: ${usage}`,
         subcategory ? `지출 소분류: ${subcategory}` : "",
         quickRecurring ? `정기지출 대분류: ${usage}` : "",
         quickRecurring ? "반복주기: 매월" : "",
+        `비용 성격: ${costBehavior}`,
+        `부가세 처리: ${taxMode}`,
+        `공급가액: ${formatWon(supplyAmount)}`,
+        `부가세: ${formatWon(vatAmount)}`,
+        `실제 지급일: ${paidAt}`,
         memo
       ].filter(Boolean).join("\n");
       const payload = {
@@ -1408,11 +1550,16 @@ export default function App() {
         category: toLegacyExpenseCategory(usage),
         payment_method: String(formData.get("payment_method") || "카드") as PaymentMethod,
         card_id: String(formData.get("card_id") || "") || null,
-        amount: parseNumber(formData.get("amount")) || Number(ocrResult?.total_amount || 0),
+        amount,
+        cost_behavior: costBehavior,
+        tax_mode: taxMode,
+        supply_amount: supplyAmount,
+        vat_amount: vatAmount,
+        paid_at: paidAt || null,
         evidence_status: quickRecurring ? "정기결제" : fileUrl ? "영수증 첨부" : "증빙 필요",
         transfer_status: String(formData.get("transfer_status") || "해당 없음") as TransferStatus,
         transfer_summary: String(formData.get("transfer_summary") || "") || null,
-        project_id: String(formData.get("project_id") || "") || null,
+        project_id: projectId || null,
         requested_by: currentPerson?.id || null,
         review_status: "검토 전" as ReviewStatus,
         review_reason: quickRecurring ? "정기 구독/반복 지출 확인" : "대표 검토 필요",
@@ -1426,7 +1573,15 @@ export default function App() {
         memo: memoLines
       };
 
-      const { data, error } = await saveWithHealing<{ id: string; purpose: string; amount: number; review_reason: string | null }>("expense_requests", payload);
+      const { data, error } = await saveWithHealing<{ id: string; purpose: string; amount: number; review_reason: string | null }>("expense_requests", payload, {
+        preserveToMemo: {
+          cost_behavior: `비용 성격: ${costBehavior}`,
+          tax_mode: `부가세 처리: ${taxMode}`,
+          supply_amount: `공급가액: ${formatWon(supplyAmount)}`,
+          vat_amount: `부가세: ${formatWon(vatAmount)}`,
+          paid_at: `실제 지급일: ${paidAt}`
+        }
+      });
       if (error) throw toFriendlyDbError(error, "지출결의 등록에 실패했습니다.");
       if (!data) throw new Error("지출결의 저장 결과를 받지 못했습니다.");
 
@@ -1467,6 +1622,8 @@ export default function App() {
       const exchangeRate = parseNumber(formData.get("exchange_rate"));
       const amount = currency === "KRW" ? parseNumber(formData.get("amount")) : Math.round(foreignAmount * exchangeRate);
       const fxMemo = currency === "KRW" ? "" : `외화 계산: ${currency} ${foreignAmount.toLocaleString("ko-KR")} × ${exchangeRate.toLocaleString("ko-KR")} = ${formatWon(amount)}`;
+      const taxMode = String(formData.get("tax_mode") || "부가세 포함");
+      const { supplyAmount, vatAmount } = calculateExpenseTax(amount, taxMode);
       const payload = {
         used_at: String(formData.get("used_at") || today()),
         purpose: String(formData.get("purpose") || "정기 구독"),
@@ -1476,6 +1633,11 @@ export default function App() {
         payment_method: paymentMethod,
         card_id: cardId,
         amount,
+        cost_behavior: "고정비" as const,
+        tax_mode: taxMode,
+        supply_amount: supplyAmount,
+        vat_amount: vatAmount,
+        paid_at: String(formData.get("used_at") || today()),
         evidence_status: "정기결제",
         transfer_status: "결제 완료" as TransferStatus,
         transfer_summary: null,
@@ -1492,6 +1654,11 @@ export default function App() {
           `결제방식: ${paymentMethod}`,
           cardLabel ? `결제카드: ${cardLabel}` : "",
           `반복주기: ${recurringCycle}`,
+          "비용 성격: 고정비",
+          `부가세 처리: ${taxMode}`,
+          `공급가액: ${formatWon(supplyAmount)}`,
+          `부가세: ${formatWon(vatAmount)}`,
+          `실제 지급일: ${String(formData.get("used_at") || today())}`,
           fxMemo,
           memo
         ].filter(Boolean).join("\n")
@@ -1502,7 +1669,12 @@ export default function App() {
           card_id: cardLabel ? `결제카드: ${cardLabel}` : "",
           payment_method: `결제방식: ${paymentMethod}`,
           usage: `정기지출 대분류: ${usage}`,
-          recurring_cycle: `반복주기: ${recurringCycle}`
+          recurring_cycle: `반복주기: ${recurringCycle}`,
+          cost_behavior: "비용 성격: 고정비",
+          tax_mode: `부가세 처리: ${taxMode}`,
+          supply_amount: `공급가액: ${formatWon(supplyAmount)}`,
+          vat_amount: `부가세: ${formatWon(vatAmount)}`,
+          paid_at: `실제 지급일: ${String(formData.get("used_at") || today())}`
         }
       });
       if (error) throw toFriendlyDbError(error, "반복 지출 등록에 실패했습니다.");
@@ -1622,6 +1794,12 @@ export default function App() {
       const subcategory = String(formData.get("usage_subcategory") || "");
       const usage = getUsageFromExpenseSubcategory(subcategory, requestedUsage);
       const plainMemo = stripExpenseSystemMemo(String(formData.get("memo") || ""));
+      const projectId = String(formData.get("project_id") || "");
+      const amount = parseNumber(formData.get("amount"));
+      const costBehavior = String(formData.get("cost_behavior") || inferExpenseCostBehavior(usage, projectId)) as "고정비" | "변동비";
+      const taxMode = String(formData.get("tax_mode") || "부가세 포함");
+      const paidAt = String(formData.get("paid_at") || formData.get("used_at") || today());
+      const { supplyAmount, vatAmount } = calculateExpenseTax(amount, taxMode);
       const payload = {
         used_at: String(formData.get("used_at") || today()),
         purpose: String(formData.get("purpose") || "지출"),
@@ -1630,11 +1808,16 @@ export default function App() {
         category: toLegacyExpenseCategory(usage),
         payment_method: String(formData.get("payment_method") || "카드") as PaymentMethod,
         card_id: String(formData.get("card_id") || "") || null,
-        amount: parseNumber(formData.get("amount")),
+        amount,
+        cost_behavior: costBehavior,
+        tax_mode: taxMode,
+        supply_amount: supplyAmount,
+        vat_amount: vatAmount,
+        paid_at: paidAt || null,
         evidence_status: nextIsRecurring ? "정기결제" : String(formData.get("evidence_status") || "증빙 필요"),
         transfer_status: String(formData.get("transfer_status") || "해당 없음") as TransferStatus,
         transfer_summary: String(formData.get("transfer_summary") || "") || null,
-        project_id: String(formData.get("project_id") || "") || null,
+        project_id: projectId || null,
         recurring_cycle: nextRecurringCycle || null,
         is_recurring: nextIsRecurring,
         review_reason: nextIsRecurring ? "정기 구독/반복 지출 확인" : "대표 검토 필요",
@@ -1643,6 +1826,11 @@ export default function App() {
           subcategory ? `지출 소분류: ${subcategory}` : "",
           nextIsRecurring ? `정기지출 대분류: ${usage}` : "",
           nextIsRecurring ? `반복주기: ${nextRecurringCycle || "매월"}` : "",
+          `비용 성격: ${costBehavior}`,
+          `부가세 처리: ${taxMode}`,
+          `공급가액: ${formatWon(supplyAmount)}`,
+          `부가세: ${formatWon(vatAmount)}`,
+          `실제 지급일: ${paidAt}`,
           plainMemo
         ].filter(Boolean).join("\n")
       };
@@ -2290,6 +2478,17 @@ export default function App() {
         {section === "overview" && (
           <Overview setSection={setSection} reviewCount={pendingReviews.length} cash={visibleCash} projects={projectsComputed} expenses={expenses} people={people} cards={cards} onAddCash={() => setModal("cashForm")} onOpenCashHistory={() => setModal("cashHistory")} />
         )}
+        {section === "finance" && (
+          <FinancePlanning
+            plans={financePlans}
+            cash={visibleCash}
+            projects={projectsComputed}
+            expenses={expenses}
+            people={people}
+            tableReady={financePlanTableReady}
+            onSave={saveFinancePlan}
+          />
+        )}
         {section === "review" && (
           <ReviewInbox
             reviews={reviews}
@@ -2538,22 +2737,51 @@ function Overview({
   const hasProjects = projects.length > 0;
   const hasExpenses = expenses.length > 0;
 
-  const autoRevenue = projects.reduce((s, p) => s + Number(p.received_amount || 0), 0);
-  const oneTimeReceivedRevenue = projects.reduce((s, p) => s + (p._isMonthlyRecurring ? 0 : Number(p.received_amount || 0)), 0);
-  const autoConfirmedRevenue = projects.reduce((s, p) => s + Number(p.confirmed_amount || 0), 0);
-  const monthlyRecurringRevenue = projects.reduce((s, p) => s + Number(p._monthlyRevenue || 0), 0);
-  const autoProjectCost = projects.reduce((s, p) => s + Number(p._cost || 0), 0);
-  const autoExpense = expenses.reduce((s, e) => s + Number(e.amount || 0), 0);
+  const currentMonth = today().slice(0, 7);
+  const monthlyRevenue = projects
+    .filter((project) => {
+      const recognitionDate = project.revenue_recognition_date
+        || projectMemoValue(project, "매출 인식일")
+        || project.tax_invoice_date
+        || project.due_date
+        || project.payment_due_date;
+      const recognitionMonth = String(recognitionDate || "").slice(0, 7);
+      return project._isMonthlyRecurring ? Boolean(recognitionMonth && recognitionMonth <= currentMonth) : recognitionMonth === currentMonth;
+    })
+    .reduce((sum, project) => {
+      const taxMode = project.revenue_tax_mode || projectMemoValue(project, "매출 부가세 처리");
+      return sum + (taxMode === "부가세 포함" ? Math.round(project._revenue / 1.1) : project._revenue);
+    }, 0) || Number(latest?.revenue || 0);
+  const monthlyOperatingExpense = expenses
+    .filter((expense) => {
+      const expenseMonth = String(expense.used_at || "").slice(0, 7);
+      return isMonthlyRecurringExpense(expense) ? expenseMonth <= currentMonth : expenseMonth === currentMonth;
+    })
+    .reduce((sum, expense) => {
+      const supplyAmount = Number(expense.supply_amount || 0)
+        || Number(readMemoField(expense.memo, "공급가액").replace(/[^0-9.-]/g, ""))
+        || Number(expense.amount || 0);
+      return sum + supplyAmount;
+    }, 0);
   const autoPayroll = people.filter((p) => p.is_active).reduce((s, p) => s + Number(p.annual_salary || 0) / 12, 0);
-  const monthlyRevenue = monthlyRecurringRevenue + oneTimeReceivedRevenue || autoRevenue || autoConfirmedRevenue || latest?.revenue || 0;
-  const monthlyExpense = autoExpense + autoPayroll || latest?.expense || 0;
+  const monthlyExpense = monthlyOperatingExpense + autoPayroll || Number(latest?.expense || 0);
   const currentCash = latest?.current_cash ?? null;
   const latestAccounts = latest ? getCashAccounts(latest) : [];
   const latestAccountSum = latestAccounts.reduce((sum, account) => sum + Number(account.balance || 0), 0);
   const netBurn = Math.max(0, Number(monthlyExpense) - Number(monthlyRevenue));
   const runway = currentCash != null && netBurn > 0 ? Math.round((Number(currentCash) / netBurn) * 10) / 10 : latest?.runway_months ?? null;
-  const receivable = projects.reduce((s, p) => s + p._receivable, 0);
-  const payable = expenses.filter((e) => e.review_status !== "승인").reduce((s, e) => s + Number(e.amount || 0), 0);
+  const receivable = projects
+    .filter((project) => {
+      const dueMonth = String(project.payment_due_date || "").slice(0, 7);
+      return project._receivable > 0 && (project._isMonthlyRecurring || !dueMonth || dueMonth <= currentMonth);
+    })
+    .reduce((sum, project) => sum + project._receivable, 0);
+  const payable = expenses
+    .filter((expense) => {
+      const paidMonth = String(expense.paid_at || readMemoField(expense.memo, "실제 지급일") || expense.used_at || "").slice(0, 7);
+      return !["결제 완료", "이체 완료", "해당 없음"].includes(String(expense.transfer_status || "")) && (!paidMonth || paidMonth <= currentMonth);
+    })
+    .reduce((sum, expense) => sum + Number(expense.amount || 0), 0);
   const expectedMonthEndCash = currentCash != null ? Number(currentCash) + Number(receivable || 0) - Number(payable || 0) : 0;
   const flowMax = Math.max(Math.abs(receivable), Math.abs(payable), Math.abs(monthlyExpense), Math.abs(expectedMonthEndCash), 1);
   const missingReceiptCount = expenses.filter((expense) => !getExpenseReceiptUrl(expense)).length;
@@ -3817,11 +4045,14 @@ function Modal({
             <label>유입 경로<select name="inflow_route"><option value="">선택</option>{inflowRoutes.map((r) => <option key={r}>{r}</option>)}</select></label>
             <label>확정 금액(견적·계약 총액)<input className="money-input" name="confirmed_amount" defaultValue="0" onInput={handleMoneyInput} /></label>
             <label>수령 금액(실입금)<input className="money-input" name="received_amount" defaultValue="0" onInput={handleMoneyInput} /></label>
+            <label>매출 부가세 처리<select name="revenue_tax_mode" defaultValue="부가세 포함"><option>부가세 포함</option><option>면세·부가세 없음</option></select><span className="field-hint">부가세는 회사 돈이 아니라 잠시 보관하는 세금 봉투입니다.</span></label>
             <label>대금 수령 상태<select name="receipt_status" defaultValue="미청구">{receiptStatuses.map((r) => <option key={r}>{r}</option>)}</select></label>
             <label>실무 담당자 연락처<input name="contact" placeholder="전화/메일" /></label>
             <label>입금 예정일<input type="date" name="payment_due_date" /></label>
             <label>마감 날짜<input type="date" name="due_date" /></label>
             <label>세금계산서 발행일<input type="date" name="tax_invoice_date" /></label>
+            <label>매출 인식일<input type="date" name="revenue_recognition_date" /><span className="field-hint">일을 끝내 고객에게 넘긴 날입니다.</span></label>
+            <label>실제 입금일<input type="date" name="received_date" /><span className="field-hint">돈이 실제 통장에 들어온 날입니다.</span></label>
             <label className="check-label"><input type="checkbox" name="repeat_client" /><span>반복 가능 고객</span></label>
             <ProjectCategoryFields />
             <label className="wide">비고/메모<textarea name="memo" /></label>
@@ -4110,6 +4341,7 @@ function ProjectWizardForm({
     project_middle_category: firstMiddle,
     project_small_category: firstSmall,
     payment_due_cycle: "once",
+    revenue_tax_mode: "부가세 포함",
     repeat_client: "false"
   });
 
@@ -4212,9 +4444,16 @@ function ProjectWizardForm({
       key: "money",
       title: "확정 금액과 수령 금액을 입력해 주세요.",
       body: (
-        <div className="wizard-pair">
-          <input value={answers.confirmed_amount || ""} onChange={(e) => setField("confirmed_amount", formatMoneyInputValue(e.target.value))} placeholder="확정 금액" inputMode="numeric" />
-          <input value={answers.received_amount || ""} onChange={(e) => setField("received_amount", formatMoneyInputValue(e.target.value))} placeholder="수령 금액" inputMode="numeric" />
+        <div className="wizard-stack">
+          <div className="wizard-pair">
+            <input value={answers.confirmed_amount || ""} onChange={(e) => setField("confirmed_amount", formatMoneyInputValue(e.target.value))} placeholder="확정 금액" inputMode="numeric" />
+            <input value={answers.received_amount || ""} onChange={(e) => setField("received_amount", formatMoneyInputValue(e.target.value))} placeholder="수령 금액" inputMode="numeric" />
+          </div>
+          <select value={answers.revenue_tax_mode || "부가세 포함"} onChange={(e) => setField("revenue_tax_mode", e.target.value)}>
+            <option>부가세 포함</option>
+            <option>면세·부가세 없음</option>
+          </select>
+          <span className="wizard-explain">부가세는 고객에게 받은 돈 중 회사 매출이 아니라 나라에 잠시 맡아 두는 10% 봉투와 같습니다.</span>
         </div>
       )
     },
@@ -4235,13 +4474,18 @@ function ProjectWizardForm({
     },
     {
       key: "dates",
-      title: "마감일과 입금 예정일을 넣어 주세요.",
+      title: "일을 끝낸 날과 돈이 들어온 날을 구분해 주세요.",
       body: (
         <div className="wizard-stack">
           <div className="wizard-pair">
             <label>마감일<input type="date" value={answers.due_date || ""} onChange={(e) => setField("due_date", e.target.value)} /></label>
             <label>입금 예정일<input type="date" value={answers.payment_due_date || ""} onChange={(e) => setField("payment_due_date", e.target.value)} /></label>
           </div>
+          <div className="wizard-pair">
+            <label>매출 인식일<input type="date" value={answers.revenue_recognition_date || ""} onChange={(e) => setField("revenue_recognition_date", e.target.value)} /></label>
+            <label>실제 입금일<input type="date" value={answers.received_date || ""} onChange={(e) => setField("received_date", e.target.value)} /></label>
+          </div>
+          <span className="wizard-explain">매출 인식일은 빵을 손님에게 건넨 날, 실제 입금일은 빵값이 통장에 들어온 날입니다. 아직 입금 전이면 실제 입금일은 비워 두세요.</span>
           <label className="check-label"><input type="checkbox" checked={answers.payment_due_cycle === "monthly"} onChange={(e) => setField("payment_due_cycle", e.target.checked ? "monthly" : "once")} /><span>매월 입금 예정입니다</span></label>
         </div>
       )
@@ -4398,6 +4642,9 @@ function ExpenseForm({
     usage: "운영비",
     payment_method: "카드",
     transfer_status: "결제 필요",
+    cost_behavior: "고정비",
+    tax_mode: "부가세 포함",
+    paid_at: today(),
     amount: "0"
   });
 
@@ -4435,7 +4682,12 @@ function ExpenseForm({
   function setUsage(value: string) {
     const nextUsage = value as ExpenseUsage;
     const nextSubcategory = expenseSubcategoryTree[nextUsage]?.[0] || "";
-    setAnswers((prev) => ({ ...prev, usage: nextUsage, usage_subcategory: nextSubcategory }));
+    setAnswers((prev) => ({
+      ...prev,
+      usage: nextUsage,
+      usage_subcategory: nextSubcategory,
+      cost_behavior: inferExpenseCostBehavior(nextUsage, prev.project_id || "")
+    }));
   }
 
   const steps: WizardStep[] = [
@@ -4471,10 +4723,28 @@ function ExpenseForm({
       )
     },
     {
+      key: "cost_behavior",
+      title: "이 비용은 매출에 따라 늘어나는 돈인가요?",
+      hint: "손님이 늘면 같이 늘어나는 재료비는 변동비, 손님이 없어도 나가는 월세·구독료는 고정비입니다.",
+      body: (
+        <div className="shortcut-row">
+          {(["고정비", "변동비"] as const).map((item) => (
+            <button key={item} type="button" className={answers.cost_behavior === item ? "shortcut-chip active" : "shortcut-chip"} onClick={() => setField("cost_behavior", item)}>{item}</button>
+          ))}
+        </div>
+      )
+    },
+    {
       key: "amount",
       title: "금액은 얼마인가요?",
       required: true,
       body: <input value={answers.amount || ""} onChange={(e) => setField("amount", formatMoneyInputValue(e.target.value))} inputMode="numeric" placeholder="금액" />
+    },
+    {
+      key: "tax_mode",
+      title: "이 금액에 부가세가 포함되어 있나요?",
+      hint: "부가세는 회사가 번 돈이 아니라 나라에 잠시 맡아 두는 10% 봉투입니다. 일반 영수증·세금계산서는 보통 부가세 포함입니다.",
+      body: <select value={answers.tax_mode || "부가세 포함"} onChange={(e) => setField("tax_mode", e.target.value)}><option>부가세 포함</option><option>면세·불공제</option></select>
     },
     {
       key: "payment_method",
@@ -4503,10 +4773,20 @@ function ExpenseForm({
       body: <select value={answers.transfer_status || "결제 필요"} onChange={(e) => setField("transfer_status", e.target.value)}>{transferStatuses.map((t) => <option key={t}>{t}</option>)}</select>
     },
     {
+      key: "paid_at",
+      title: "통장에서 실제로 돈이 빠진 날은 언제인가요?",
+      hint: "지출일은 물건을 산 날, 실제 지급일은 통장 물통에서 돈이 빠진 날입니다. 아직 지급 전이면 예정일을 적어 두세요.",
+      body: <input type="date" value={answers.paid_at || answers.used_at || today()} onChange={(e) => setField("paid_at", e.target.value)} />
+    },
+    {
       key: "project_id",
       title: "연결할 프로젝트가 있나요?",
       body: (
-        <select value={answers.project_id || ""} onChange={(e) => setField("project_id", e.target.value)}>
+        <select value={answers.project_id || ""} onChange={(e) => setAnswers((prev) => ({
+          ...prev,
+          project_id: e.target.value,
+          cost_behavior: inferExpenseCostBehavior(prev.usage || "운영비", e.target.value)
+        }))}>
           <option value="">선택 안 함</option>
           {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
         </select>
@@ -4579,6 +4859,9 @@ function ExpenseEditForm({
   const [usage, setUsageValue] = useState<ExpenseUsage>((expense.usage || "운영비") as ExpenseUsage);
   const [subcategory, setSubcategory] = useState(getExpenseSubcategoryLabel(expense) || expenseSubcategoryTree[(expense.usage || "운영비") as ExpenseUsage]?.[0] || "");
   const [isRecurring, setIsRecurring] = useState(Boolean(expense.is_recurring));
+  const costBehavior = expense.cost_behavior || readMemoField(expense.memo, "비용 성격") || inferExpenseCostBehavior(String(expense.usage || ""), expense.project_id || "");
+  const taxMode = expense.tax_mode || readMemoField(expense.memo, "부가세 처리") || "부가세 포함";
+  const paidAt = expense.paid_at || readMemoField(expense.memo, "실제 지급일") || expense.used_at || today();
   const subcategories = expenseSubcategoryTree[usage] || expenseSubcategoryTree["운영비"];
   function setEditUsage(value: string) {
     const nextUsage = value as ExpenseUsage;
@@ -4607,6 +4890,9 @@ function ExpenseEditForm({
         <label>사용 용도 대분류<select name="usage" value={usage} onChange={(event) => setEditUsage(event.target.value)}>{expenseUsages.map((c) => <option key={c}>{c}</option>)}</select></label>
         <label>사용 용도 소분류<select name="usage_subcategory" value={subcategory} onChange={(event) => setSubcategory(event.target.value)}>{subcategories.map((item) => <option key={item}>{item}</option>)}</select></label>
         <label>금액<input className="money-input" name="amount" defaultValue={formatMoneyInputValue(String(expense.amount || ""))} onInput={handleMoneyInput} inputMode="numeric" required /></label>
+        <label>비용 성격<select name="cost_behavior" defaultValue={costBehavior}><option>고정비</option><option>변동비</option></select><span className="field-hint">재료비처럼 매출과 같이 늘면 변동비, 월세처럼 매달 나가면 고정비입니다.</span></label>
+        <label>부가세 처리<select name="tax_mode" defaultValue={taxMode}><option>부가세 포함</option><option>면세·불공제</option></select><span className="field-hint">부가세는 회사 비용과 분리하는 세금 봉투입니다.</span></label>
+        <label>실제 지급일<input type="date" name="paid_at" defaultValue={paidAt} /><span className="field-hint">통장에서 실제 돈이 빠진 날입니다.</span></label>
         <label>결제방식<select name="payment_method" value={method} onChange={(event) => setMethod(event.target.value as PaymentMethod)}>{paymentMethods.map((m) => <option key={m}>{m}</option>)}</select></label>
         {method === "카드" && <label>카드<select name="card_id" defaultValue={expense.card_id || ""}><option value="">카드 선택</option>{cards.map((c) => <option key={c.id} value={c.id}>{c.label}</option>)}</select></label>}
         <label>이체/지급 상태<select name="transfer_status" defaultValue={expense.transfer_status || "해당 없음"}>{transferStatuses.map((status) => <option key={status}>{status}</option>)}</select></label>
@@ -4644,6 +4930,7 @@ function RecurringWizardForm({
     payment_method: "카드",
     card_id: defaultCardId,
     currency: "KRW",
+    tax_mode: "부가세 포함",
     used_at: today(),
     amount: "0"
   });
@@ -4717,6 +5004,12 @@ function RecurringWizardForm({
           )}
         </div>
       )
+    },
+    {
+      key: "tax_mode",
+      title: "이 정기 결제에 부가세가 포함되어 있나요?",
+      hint: "부가세는 실제 운영비와 분리해 두는 세금 봉투입니다. 해외 서비스처럼 부가세를 따로 공제하지 못하면 면세·불공제를 선택하세요.",
+      body: <select value={answers.tax_mode || "부가세 포함"} onChange={(e) => setField("tax_mode", e.target.value)}><option>부가세 포함</option><option>면세·불공제</option></select>
     },
     {
       key: "payment_method",
@@ -4862,6 +5155,9 @@ function ProjectEditForm({
   const paymentDueDate = project.payment_due_date || projectMemoValue(project, "입금 예정일");
   const dueDate = project.due_date || projectMemoValue(project, "마감 날짜");
   const taxInvoiceDate = project.tax_invoice_date || projectMemoValue(project, "세금계산서 발행일");
+  const revenueRecognitionDate = project.revenue_recognition_date || projectMemoValue(project, "매출 인식일");
+  const receivedDate = project.received_date || projectMemoValue(project, "실제 입금일");
+  const revenueTaxMode = project.revenue_tax_mode || projectMemoValue(project, "매출 부가세 처리") || "부가세 포함";
   const repeatClient = project.repeat_client || projectMemoValue(project, "반복 가능 고객") === "예";
   const cleanMemo = getProjectPlainMemo(project);
   const categoryDefaults = {
@@ -4895,11 +5191,14 @@ function ProjectEditForm({
         <label>유입 경로<select name="inflow_route" defaultValue={inflowRoute}><option value="">선택</option>{inflowRoute && !inflowRoutes.includes(inflowRoute) && <option>{inflowRoute}</option>}{inflowRoutes.map((r) => <option key={r}>{r}</option>)}</select></label>
         <label>확정 금액(견적·계약 총액)<input className="money-input" name="confirmed_amount" defaultValue={formatMoneyInputValue(String(project._revenue || ""))} onInput={handleMoneyInput} /></label>
         <label>수령 금액(실입금)<input className="money-input" name="received_amount" defaultValue={formatMoneyInputValue(String(project.received_amount || ""))} onInput={handleMoneyInput} /></label>
+        <label>매출 부가세 처리<select name="revenue_tax_mode" defaultValue={revenueTaxMode}><option>부가세 포함</option><option>면세·부가세 없음</option></select><span className="field-hint">부가세 포함이면 손익 매출에서는 10% 세금 봉투를 분리합니다.</span></label>
         <label>대금 수령 상태<select name="receipt_status" defaultValue={receiptStatus}>{receiptStatuses.map((r) => <option key={r}>{r}</option>)}</select></label>
         <label>실무 담당자 연락처<input name="contact" defaultValue={contact} /></label>
         <label>입금 예정일<input type="date" name="payment_due_date" defaultValue={paymentDueDate} /></label>
         <label>마감 날짜<input type="date" name="due_date" defaultValue={dueDate} /></label>
         <label>세금계산서 발행일<input type="date" name="tax_invoice_date" defaultValue={taxInvoiceDate} /></label>
+        <label>매출 인식일<input type="date" name="revenue_recognition_date" defaultValue={revenueRecognitionDate} /><span className="field-hint">일을 끝내 고객에게 넘긴 날입니다.</span></label>
+        <label>실제 입금일<input type="date" name="received_date" defaultValue={receivedDate} /><span className="field-hint">돈이 실제 통장에 들어온 날입니다.</span></label>
         <label>입금 반복<select name="payment_due_cycle" defaultValue={project.memo?.includes("매월 반복") ? "monthly" : "once"}><option value="once">일회성</option><option value="monthly">매월 반복</option></select></label>
         <label className="check-label"><input type="checkbox" name="repeat_client" defaultChecked={repeatClient} /><span>반복 가능 고객</span></label>
         <ProjectCategoryFields defaults={categoryDefaults} />
@@ -5296,6 +5595,9 @@ function DetailModal({
     const paymentDueDate = p.payment_due_date || projectMemoValue(p, "입금 예정일") || "-";
     const dueDate = p.due_date || projectMemoValue(p, "마감 날짜") || "-";
     const taxInvoiceDate = p.tax_invoice_date || projectMemoValue(p, "세금계산서 발행일") || "-";
+    const revenueRecognitionDate = p.revenue_recognition_date || projectMemoValue(p, "매출 인식일") || "-";
+    const receivedDate = p.received_date || projectMemoValue(p, "실제 입금일") || "-";
+    const revenueTaxMode = p.revenue_tax_mode || projectMemoValue(p, "매출 부가세 처리") || "-";
     const repeatClient = p.repeat_client || projectMemoValue(p, "반복 가능 고객") === "예";
     return (
       <>
@@ -5332,6 +5634,9 @@ function DetailModal({
           <Info label="입금 예정일" value={paymentDueDate} />
           <Info label="마감 날짜" value={dueDate} />
           <Info label="세금계산서 발행일" value={taxInvoiceDate} />
+          <Info label="매출 인식일" value={`${revenueRecognitionDate} · 일을 끝내 고객에게 넘긴 날`} />
+          <Info label="실제 입금일" value={`${receivedDate} · 통장에 돈이 들어온 날`} />
+          <Info label="매출 부가세" value={`${revenueTaxMode} · 나라에 맡길 세금 봉투`} />
           <Info label="반복 가능 고객" value={repeatClient ? "예" : "아니오"} />
           <Info label="메모" value={getProjectPlainMemo(p) || "-"} />
         </div>
@@ -5399,6 +5704,10 @@ function DetailModal({
           <Info label="금액" value={formatWon(selectedExpense.amount)} />
           <Info label="지출 대분류" value={getExpenseUsageLabel(selectedExpense)} />
           <Info label="지출 소분류" value={getExpenseSubcategoryLabel(selectedExpense) || "-"} />
+          <Info label="비용 성격" value={`${selectedExpense.cost_behavior || readMemoField(selectedExpense.memo, "비용 성격") || inferExpenseCostBehavior(String(selectedExpense.usage || ""), selectedExpense.project_id || "")} · 재료비인지 월세인지 구분`} />
+          <Info label="공급가액" value={`${formatWon(selectedExpense.supply_amount || Number(readMemoField(selectedExpense.memo, "공급가액").replace(/[^0-9.-]/g, "")) || selectedExpense.amount)} · 실제 회사 비용`} />
+          <Info label="부가세" value={`${formatWon(selectedExpense.vat_amount || Number(readMemoField(selectedExpense.memo, "부가세").replace(/[^0-9.-]/g, "")) || 0)} · 나라에 맡길 세금 봉투`} />
+          <Info label="실제 지급일" value={`${selectedExpense.paid_at || readMemoField(selectedExpense.memo, "실제 지급일") || selectedExpense.used_at} · 통장에서 돈이 빠진 날`} />
           <Info label="결제방식" value={getExpensePaymentLabel(selectedExpense, cards)} />
           {isRecurringExpense(selectedExpense) && <Info label="반복 주기" value={getExpenseCycleLabel(selectedExpense)} />}
           <Info label="이체 여부" value={selectedExpense.transfer_status || "-"} />
