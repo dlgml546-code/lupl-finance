@@ -1943,6 +1943,20 @@ export default function App() {
     }
   }
 
+  async function deletePermission(permission: PagePermission) {
+    if (!window.confirm("이 페이지 권한을 삭제할까요?")) return;
+    try {
+      const { error } = await supabase.from("page_permissions").delete().eq("id", permission.id);
+      if (error) throw toFriendlyDbError(error, "권한 삭제에 실패했습니다.");
+      setPermissions((prev) => prev.filter((item) => item.id !== permission.id));
+      showToast("권한을 삭제했습니다.");
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : "권한 삭제 실패", "err");
+      throw error;
+    }
+  }
+
+
   // 3번: 현금 스냅샷 직접 입력
   async function createCash(formData: FormData) {
     try {
@@ -2575,6 +2589,7 @@ export default function App() {
             permissions={permissions}
             onCreatePerson={() => { setSelectedPerson(null); setModal("personForm"); }}
             onCreatePermission={() => setModal("permissionForm")}
+            onDeletePermission={deletePermission}
             onOpenPerson={(person) => {
               setSelectedPerson(person);
               setModal("employeeDetail");
@@ -3064,6 +3079,7 @@ function Expense({
 }) {
   type ExpenseMetricKey = "recurring" | "month" | "total" | "pending";
   const [activeMetric, setActiveMetric] = useState<ExpenseMetricKey>("recurring");
+  const [activeUsage, setActiveUsage] = useState("전체");
   const pending = expenses.filter((item) => item.review_status === "검토 전");
   const currentMonth = today().slice(0, 7);
   const recurringExpenses = expenses.filter(isRecurringExpense);
@@ -3112,18 +3128,30 @@ function Expense({
     }
   };
   const activeDetail = metricDetails[activeMetric];
-  const activeTopItems = [...activeDetail.items].sort((a, b) => Number(b.amount || 0) - Number(a.amount || 0)).slice(0, 6);
-  const maxActiveAmount = Math.max(...activeTopItems.map((item) => Number(item.amount || 0)), 1);
-  const usageBreakdown = Object.entries(activeDetail.items.reduce<Record<string, number>>((acc, item) => {
+  useEffect(() => {
+    setActiveUsage("전체");
+  }, [activeMetric]);
+  const usageBreakdownAll = Object.entries(activeDetail.items.reduce<Record<string, number>>((acc, item) => {
     const key = getExpenseUsageDisplay(item);
     acc[key] = (acc[key] || 0) + Number(item.amount || 0);
     return acc;
-  }, {})).sort((a, b) => b[1] - a[1]).slice(0, 5);
+  }, {})).sort((a, b) => b[1] - a[1]);
+  const activeItems = activeUsage === "전체" ? activeDetail.items : activeDetail.items.filter((item) => getExpenseUsageDisplay(item) === activeUsage);
+  const activeFilteredTotal = activeItems.reduce((sum, item) => sum + Number(item.amount || 0), 0);
+  const activeTopItems = [...activeItems].sort((a, b) => Number(b.amount || 0) - Number(a.amount || 0)).slice(0, 7);
+  const maxActiveAmount = Math.max(...activeTopItems.map((item) => Number(item.amount || 0)), 1);
+  const usageBreakdown = usageBreakdownAll.slice(0, 7);
 
   return (
     <section className="section active">
       <div className="section-toolbar">
         <button className="btn small" onClick={onManageCard}>결제수단(카드) 관리</button>
+        <button className="btn small blue" onClick={onCreate}>빠른 지출 등록</button>
+        <button className="btn small" onClick={onRecurring}>반복 지출</button>
+        <button className="btn small notification-btn" onClick={() => setActiveMetric("pending")}>
+          검토 요약
+          {pending.length > 0 && <span className="notify-dot" aria-label="검토 필요" />}
+        </button>
         <button className="btn small" onClick={onManageMobileDevices}>모바일 기기 관리</button>
       </div>
       <div className="grid four expense-summary">
@@ -3136,18 +3164,32 @@ function Expense({
         <div className="expense-detail-head">
           <div>
             <h2 className="card-title">{activeDetail.title}</h2>
-            <p className="card-sub">{activeDetail.desc}</p>
+            <p className="card-sub">{activeDetail.desc} {activeUsage !== "전체" && `${activeUsage}만 보고 있습니다.`}</p>
           </div>
           <div className={`expense-detail-total ${activeDetail.tone}`}>
-            <span>{activeDetail.items.length}건</span>
-            <strong>{formatWon(activeDetail.total)}</strong>
+            <span>{activeItems.length}건</span>
+            <strong>{formatWon(activeUsage === "전체" ? activeDetail.total : activeFilteredTotal)}</strong>
           </div>
         </div>
+        {usageBreakdown.length > 0 && (
+          <div className="expense-usage-strip" aria-label="용도별 지출 필터">
+            <button type="button" className={activeUsage === "전체" ? "active" : ""} onClick={() => setActiveUsage("전체")}>
+              <span>전체</span><strong>{formatWon(activeDetail.total)}</strong>
+            </button>
+            {usageBreakdown.map(([usage, amount], index) => (
+              <button type="button" className={`tone-${index % 4} ${activeUsage === usage ? "active" : ""}`} key={usage} onClick={() => setActiveUsage(usage)}>
+                <span>{usage}</span><strong>{formatWon(amount)}</strong>
+              </button>
+            ))}
+          </div>
+        )}
         {activeDetail.items.length === 0 ? (
           <EmptyState text="표시할 세부 항목이 없습니다." />
-        ) : activeMetric === "recurring" ? (
-          <div className="recurring-runway" aria-label="정기결제 금액 비중">
-            {[...activeDetail.items].sort((a, b) => Number(b.amount || 0) - Number(a.amount || 0)).map((item, index) => {
+        ) : (
+          <>
+            {activeMetric === "recurring" && activeItems.length > 0 && (
+              <div className="recurring-runway compact" aria-label="정기결제 금액 비중">
+                {[...activeItems].sort((a, b) => Number(b.amount || 0) - Number(a.amount || 0)).map((item, index) => {
               const share = activeDetail.total ? Math.max(18, Math.round((Number(item.amount || 0) / activeDetail.total) * 100)) : 100;
               return (
                 <button
@@ -3163,9 +3205,9 @@ function Expense({
                   <strong>{formatWon(item.amount)}</strong>
                 </button>
               );
-            })}
-          </div>
-        ) : (
+                })}
+              </div>
+            )}
           <div className="expense-detail-grid">
             <div className="expense-detail-bars">
               {activeTopItems.map((item) => {
@@ -3196,20 +3238,10 @@ function Expense({
               })}
             </div>
           </div>
+          </>
         )}
       </div>
       <div className="grid two">
-        <div className="card">
-          <h2 className="card-title">빠른 지출 등록</h2>
-          <p className="card-sub">영수증 사진을 올리면 Storage에 저장되고, 노션 지출결의 기준 항목으로 등록됩니다.</p>
-          {/* 6번: 빠른 지출 등록 하나로 통합 + 반복 지출만 별도 */}
-          <div className="quick-actions quick-two">
-            <QuickCard icon={<Upload size={18} />} title="빠른 지출 등록" copy="영수증 업로드 + 수기 입력" onClick={onCreate} />
-            <QuickCard icon={<Repeat size={18} />} title="반복 지출(구독)" copy="구독료·정기결제 등록" onClick={onRecurring} />
-          </div>
-        </div>
-
-        {/* 13번: 검토 요약 각 건 클릭 시 상세 */}
         <div className="card">
           <h2 className="card-title">지출결의 검토 요약</h2>
           <p className="card-sub">검토가 필요한 항목을 누르면 무엇을 검토할지 상세가 열립니다.</p>
@@ -3230,10 +3262,22 @@ function Expense({
             </div>
           )}
         </div>
+        <div className="card">
+          <h2 className="card-title">이번달 누적 사용비용</h2>
+          <p className="card-sub">월 지출에는 이번 달 사용분과 매월 반복 지출이 같이 반영됩니다.</p>
+          <div className="expense-month-total">
+            <span>{Number(currentMonth.slice(5))}월 사용 합계</span>
+            <strong>{formatWon(monthTotal)}</strong>
+            <em>정기 {formatWon(monthRecurringTotal)} · 일반 {formatWon(monthNonRecurringTotal)}</em>
+          </div>
+        </div>
       </div>
 
       <div className="card solid mt">
-        <h2 className="card-title">지출결의 상세 목록</h2>
+        <div className="table-title-row">
+          <h2 className="card-title">지출결의 상세 목록</h2>
+          <div className="table-total-chip">이번달 누적 {formatWon(monthTotal)}</div>
+        </div>
         <p className="card-sub">항목을 누르면 증빙, 결제수단, 이체 내용을 확인하는 팝업이 열립니다.</p>
         {expenses.length === 0 ? (
           <EmptyState text="등록된 지출결의가 없습니다. ‘빠른 지출 등록’으로 첫 항목을 만들어보세요." />
@@ -3320,7 +3364,7 @@ function Revenue({
         </div>
       </div>
 
-      <div className="grid four section-gap">
+      <div className="grid five revenue-kpis section-gap">
         <KpiCard compact label="총 매출(확정금액)" value={formatWon(totals.revenue)} chip="누적" tone="green" empty={projects.length === 0} />
         <KpiCard compact label="월 반복 매출" value={formatWon(totals.monthly)} chip="매월 반영" tone="green" empty={totals.monthly === 0} />
         <KpiCard compact label="총 비용" value={formatWon(totals.cost)} chip="지출결의 자동집계" tone="red" empty={projects.length === 0} />
@@ -3342,6 +3386,8 @@ function Revenue({
                   <th style={{ width: 100 }}>거래처 구분</th>
                   <th style={{ width: 110 }}>상태</th>
                   <th style={{ width: 90 }}>책임자</th>
+                  <th style={{ width: 110 }}>담당자</th>
+                  <th style={{ width: 140 }}>분류</th>
                   <th className="num" style={{ width: 120 }}>확정금액</th>
                   <th className="num" style={{ width: 120 }}>월 반복</th>
                   <th className="num" style={{ width: 120 }}>비용</th>
@@ -3353,10 +3399,12 @@ function Revenue({
               <tbody>
                 {projects.map((row) => (
                   <tr key={row.id} className="clickable" onClick={() => onOpenProject(row)}>
-                    <td>{row.name}</td>
+                    <td><span className="project-name-cell">{row.name}</span></td>
                     <td>{row.client_type || "-"}</td>
                     <td><span className="status-tag">{row.status}</span></td>
                     <td>{row.owner_label || "-"}</td>
+                    <td>{projectMemoValue(row, "실무담당자") || projectMemoValue(row, "담당자") || "-"}</td>
+                    <td>{getProjectCategoryLabel(row)}</td>
                     <td className="num">{formatWon(row._revenue)}</td>
                     <td className="num">{row._isMonthlyRecurring ? formatWon(row._monthlyRevenue) : "-"}</td>
                     <td className="num">{formatWon(row._cost)}</td>
@@ -3411,7 +3459,18 @@ function Compensation({
         <QuickCard title="상여금 추가" copy="프로젝트 순수익·지급률 기준 자동 계산" onClick={onCreateBonus} />
       </div>
 
-      <div className="grid two compensation-layout">
+      <div className="grid two compensation-highlights">
+        <div className="point-card green no-margin">
+          <div><div className="point-title">이달의 월급 총액</div><div className="point-copy">등록 직원 계약연봉 ÷ 12개월</div></div>
+          <div className="point-value">{formatWon(monthlySalaryTotal)}</div>
+        </div>
+        <div className="point-card blue no-margin">
+          <div><div className="point-title">연봉 총액</div><div className="point-copy">등록 직원 계약연봉 합계</div></div>
+          <div className="point-value">{formatWon(totalSalary)}</div>
+        </div>
+      </div>
+
+      <div className="compensation-layout">
         <div className="card solid">
           <h2 className="card-title">직원·연봉 현황</h2>
           <p className="card-sub">직원명을 누르면 연봉·인상률·상여금·투입 프로젝트 상세가 열립니다.</p>
@@ -3438,21 +3497,9 @@ function Compensation({
               </table>
             </div>
           )}
-          {people.length > 0 && (
-            <div className="salary-total-stack">
-              <div className="point-card green">
-                <div><div className="point-title">이달의 월급 총액</div><div className="point-copy">등록 직원 계약연봉 ÷ 12개월</div></div>
-                <div className="point-value">{formatWon(monthlySalaryTotal)}</div>
-              </div>
-              <div className="point-card blue">
-                <div><div className="point-title">연봉 총액</div><div className="point-copy">등록 직원 계약연봉 합계</div></div>
-                <div className="point-value">{formatWon(totalSalary)}</div>
-              </div>
-            </div>
-          )}
         </div>
 
-        <div className="card">
+        <div className="card mt">
           <h2 className="card-title">상여금·성과보상 현황</h2>
           <p className="card-sub">프로젝트 순수익과 지급률로 자동 계산된 상여금을 봅니다.</p>
           {bonuses.length === 0 ? (
@@ -3638,7 +3685,6 @@ function MarginCalculator({
         <div className="margin-column">
           <div className="card margin-section">
             <h2 className="card-title">수입 구성</h2>
-            <p className="card-sub">PDF의 받은 총액, 공급가액, 부가세 항목입니다.</p>
             <div className="modal-form margin-fields">
               <label>{mode === "lecture" ? "회당 수금단가" : "프로젝트 수금액"}<input value={unitPrice} onChange={(e) => setUnitPrice(formatMoneyInputValue(e.target.value))} inputMode="numeric" /></label>
               <label>{mode === "lecture" ? "회차" : "수량"}<input value={quantity} onChange={(e) => setQuantity(formatMoneyInputValue(e.target.value))} inputMode="numeric" /></label>
@@ -3747,11 +3793,6 @@ function MarginCalculator({
               <div className="calc-row"><span>공급가액(마진 기준)</span><strong>{formatWon(netRevenue)}</strong></div>
               <div className="calc-row"><span>부가세</span><strong>{formatWon(vat)}</strong></div>
             </div>
-            <div className="margin-note">
-              {paymentFlow === "instructor"
-                ? "강사가 먼저 받은 건은 회사가 실제 회수하는 금액을 마진 기준 수익으로 계산합니다. 기관 입금 캡처와 강사 이체 캡처를 받아 두고, 회사가 받은 금액만큼 현금영수증을 발행하도록 체크하세요."
-                : "회사로 직접 입금되는 건은 PDF 계산기처럼 받은 총액에서 부가세를 분리한 공급가액을 마진 기준 수익으로 계산합니다."}
-            </div>
           </div>
         </div>
       </div>
@@ -3827,7 +3868,7 @@ function Resource({
             const items = labor.filter((item) => item.project_id === project.id);
             if (items.length === 0) return (
               <div key={project.id} className="stack-row">
-                <strong>{project.name}</strong>
+                <strong className="stack-project-name">{project.name}</strong>
                 <div className="stack-bar empty-bar" />
                 <span className="num">0.00MM</span>
               </div>
@@ -3852,6 +3893,7 @@ function Org({
   permissions,
   onCreatePerson,
   onCreatePermission,
+  onDeletePermission,
   onOpenPerson
 }: {
   currentPerson: Person;
@@ -3861,6 +3903,7 @@ function Org({
   permissions: PagePermission[];
   onCreatePerson: () => void;
   onCreatePermission: () => void;
+  onDeletePermission: (permission: PagePermission) => void;
   onOpenPerson: (person: Person) => void;
 }) {
   const ranksOrder: Rank[] = ["책임", "선임", "매니저"];
@@ -3959,14 +4002,15 @@ function Org({
         {permissions.length === 0 ? (
           <EmptyState text="추가된 페이지 권한이 없습니다." />
         ) : (
-          <div className="metric-list">
+          <div className="permission-list">
             {permissions.map((permission) => (
-              <Metric
-                key={permission.id}
-                title={people.find((person) => person.id === permission.person_id)?.name || "직원"}
-                copy={permission.page_key}
-                value={permission.permission}
-              />
+              <div className="permission-row" key={permission.id}>
+                <div>
+                  <strong>{people.find((person) => person.id === permission.person_id)?.name || "직원"}</strong>
+                  <span>{permission.page_key} · {permission.permission}</span>
+                </div>
+                {canManage && <button className="btn small danger" type="button" onClick={() => onDeletePermission(permission)}>삭제</button>}
+              </div>
             ))}
           </div>
         )}
@@ -5999,7 +6043,7 @@ function CashHistory({ cash, onClose, onAddCash }: { cash: CashSnapshot[]; onClo
 // 4번: 토스 블루 계열 직관적 색상 (CSS 변수로 정의됨)
 function CashFlowChart({ cash, onAddCash }: { cash: CashSnapshot[]; onAddCash: () => void }) {
   const items = cash
-    .filter((item) => String(item.snapshot_month || "") >= "2026-06-01")
+    .filter((item) => String(item.snapshot_month || "").slice(0, 7) >= "2026-06")
     .sort((a, b) => String(a.snapshot_month).localeCompare(String(b.snapshot_month)));
   if (items.length === 0) {
     return (
@@ -6090,7 +6134,7 @@ function StackRow({
   };
   return (
     <div className="stack-row">
-      <strong>{project}</strong>
+      <strong className="stack-project-name">{project}</strong>
       <div className="stack-bar">
         {segments.map(([rank, width], index) => (
           <div key={`${project}-${rank}-${index}`} className={`stack-seg ${classMap[rank]}`} style={{ width: `${width}%` }}>
