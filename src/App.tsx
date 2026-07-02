@@ -6510,16 +6510,17 @@ function ProfitMap({ projects, onOpenProject }: { projects: ProjectComputed[]; o
         const left = Math.min(70, 10 + margin * 120);
         const top = Math.max(10, 70 - revenueRatio * 54);
         const tones = ["green", "blue", "orange", "purple"];
+        const labelSize = project.name.length > 22 ? 9 : project.name.length > 14 ? 10 : project.name.length > 9 ? 11 : 12;
         return (
           <button
             key={project.id}
             className={`bubble ${tones[index % tones.length]}`}
-            style={{ left: `${left}%`, top: `${top}%`, width: size, height: size }}
+            style={{ left: `${left}%`, top: `${top}%`, width: size, height: size, fontSize: `${labelSize}px` }}
             onClick={() => onOpenProject(project)}
             type="button"
             title={`${project.name} · 마진 ${formatPercent(project._marginRate)}`}
           >
-            {project.name.length > 8 ? project.name.slice(0, 7) + "…" : project.name}
+            <span className="bubble-label">{project.name}</span>
           </button>
         );
       })}
