@@ -3485,3 +3485,236 @@ input:focus, select:focus, textarea:focus {
     grid-template-columns: 1fr;
   }
 }
+
+/* v6: 큰 금액 잘림 방지 + AI 입력 도우미 */
+.kpi-card,
+.hero-card,
+.cash-signal,
+.metric-card,
+.point-card,
+.expense-detail-total {
+  container-type: inline-size;
+}
+
+.kpi-value {
+  font-size: clamp(16px, 8.8cqw, 28px);
+  letter-spacing: 0;
+  line-height: 1.08;
+}
+
+.overview-auto-kpis .kpi-value,
+.overview-auto-kpis .resource-kpi .kpi-value {
+  font-size: clamp(16px, 8.2cqw, 22px);
+}
+
+.resource-kpi .kpi-value {
+  font-size: clamp(16px, 8.4cqw, 24px);
+}
+
+.hero-value {
+  font-size: clamp(24px, 8.2cqw, 42px);
+  letter-spacing: 0;
+}
+
+.cash-signal strong {
+  font-size: clamp(16px, 8.5cqw, 22px);
+}
+
+.metric-card .value,
+.point-value,
+.expense-detail-total strong {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-layout {
+  align-items: start;
+}
+
+.ai-chat-card,
+.ai-draft-card {
+  display: grid;
+  gap: 16px;
+}
+
+.ai-card-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  align-items: flex-start;
+}
+
+.ai-thread {
+  display: grid;
+  gap: 10px;
+  min-height: 320px;
+  max-height: 520px;
+  overflow-y: auto;
+  padding: 16px;
+  border-radius: 20px;
+  background: rgba(248, 250, 252, 0.86);
+  border: 1px solid rgba(16, 24, 40, 0.06);
+}
+
+.ai-bubble {
+  max-width: 88%;
+  border-radius: 18px;
+  padding: 12px 14px;
+  color: var(--ink);
+  font-size: 14px;
+  line-height: 1.55;
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+}
+
+.ai-bubble.assistant {
+  justify-self: start;
+  background: #fff;
+  border: 1px solid rgba(16, 24, 40, 0.06);
+}
+
+.ai-bubble.user {
+  justify-self: end;
+  background: var(--blue-soft);
+  color: #245fbe;
+  font-weight: 720;
+}
+
+.ai-quick-replies {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.ai-quick-replies .chip-choice {
+  border: 0;
+}
+
+.ai-input-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+}
+
+.ai-input-row input {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid rgba(16, 24, 40, 0.08);
+  border-radius: 14px;
+  padding: 13px 14px;
+  background: #fff;
+  color: var(--ink);
+  font: inherit;
+}
+
+.ai-draft-kpis {
+  display: grid;
+  gap: 10px;
+}
+
+.ai-draft-summary,
+.ai-employment-box {
+  border-radius: 18px;
+  padding: 16px;
+  background: rgba(238, 245, 255, 0.72);
+  border: 1px solid rgba(49, 130, 246, 0.12);
+}
+
+.ai-draft-summary strong,
+.ai-draft-summary span {
+  display: block;
+  min-width: 0;
+  line-height: 1.45;
+  word-break: keep-all;
+}
+
+.ai-draft-summary strong {
+  color: var(--ink);
+  font-size: 17px;
+  font-weight: 820;
+}
+
+.ai-draft-summary span {
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 700;
+  margin-top: 4px;
+}
+
+.ai-instructor-list,
+.ai-employment-box {
+  display: grid;
+  gap: 10px;
+}
+
+.ai-instructor-row,
+.ai-employment-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  padding: 13px 14px;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.82);
+  border: 1px solid rgba(16, 24, 40, 0.055);
+}
+
+.ai-instructor-row strong,
+.ai-instructor-row span,
+.ai-employment-row strong,
+.ai-employment-row span {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-instructor-row strong,
+.ai-employment-row strong {
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 780;
+}
+
+.ai-instructor-row span,
+.ai-employment-row span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+  margin-top: 4px;
+}
+
+.ai-instructor-row b {
+  color: #245fbe;
+  font-size: 14px;
+  font-weight: 820;
+  white-space: nowrap;
+}
+
+.ai-employment-box h3 {
+  margin: 0;
+  color: var(--ink);
+  font-size: 15px;
+  font-weight: 820;
+}
+
+.btn.wide {
+  width: 100%;
+  justify-content: center;
+}
+
+@media (max-width: 760px) {
+  .ai-input-row,
+  .ai-instructor-row,
+  .ai-employment-row {
+    grid-template-columns: 1fr;
+  }
+
+  .ai-bubble {
+    max-width: 100%;
+  }
+}

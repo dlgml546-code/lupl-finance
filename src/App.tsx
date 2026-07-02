@@ -43,6 +43,7 @@ import "./styles.css";
 type SectionKey =
   | "overview"
   | "finance"
+  | "ai"
   | "review"
   | "expense"
   | "revenue"
@@ -105,6 +106,41 @@ type CareEvent = {
   daysLeft: number;
   tone: "green" | "orange" | "purple";
 };
+type AiChatMessage = { role: "user" | "assistant"; content: string };
+type AiInstructorDraft = {
+  name?: string;
+  hours?: number;
+  mainSessions?: number;
+  assistantSessions?: number;
+  institutionPaid?: number;
+  plannedPay?: number;
+  companyCollection?: number;
+};
+type AiEmploymentDraft = {
+  name?: string;
+  role?: string;
+  employeeNumber?: string;
+  phone?: string;
+  monthlySalary?: number;
+  annualSalary?: number;
+  weeklyWorkDays?: number;
+  dailyWorkHours?: number;
+};
+type AiFinanceDraft = {
+  projectName?: string;
+  clientName?: string;
+  clientType?: string;
+  paymentFlow?: "company" | "instructor";
+  instructorCount?: number;
+  instructors?: AiInstructorDraft[];
+  grossInstitutionPaid?: number;
+  instructorPlannedPayTotal?: number;
+  companyCollectionTotal?: number;
+  companyCollectionReceivedTotal?: number;
+  companyRevenue?: number;
+  memo?: string;
+  employmentCandidates?: AiEmploymentDraft[];
+};
 
 const sectionMeta: Record<SectionKey, { title: string; desc: string }> = {
   overview: {
@@ -114,6 +150,10 @@ const sectionMeta: Record<SectionKey, { title: string; desc: string }> = {
   finance: {
     title: "재무계획·회계",
     desc: "월별 손익, 현금흐름, 계획 대비 실적과 손익분기점을 쉬운 설명과 함께 확인합니다."
+  },
+  ai: {
+    title: "AI 입력 도우미",
+    desc: "말로 설명하면 프로젝트, 강사 정산, 회사 회수액, 고용 시 월 인건비를 질문으로 정리해 초안으로 만듭니다."
   },
   review: {
     title: "대표 검토함",
@@ -148,6 +188,7 @@ const sectionMeta: Record<SectionKey, { title: string; desc: string }> = {
 const menu: Array<{ key: SectionKey; label: string }> = [
   { key: "overview", label: "경영현황" },
   { key: "finance", label: "재무계획·회계" },
+  { key: "ai", label: "AI 입력 도우미" },
   { key: "review", label: "대표 검토함" },
   { key: "expense", label: "지출결의" },
   { key: "revenue", label: "사업·매출관리" },
@@ -160,6 +201,7 @@ const menu: Array<{ key: SectionKey; label: string }> = [
 const pageKeyMap: Record<SectionKey, string> = {
   overview: "overview",
   finance: "finance",
+  ai: "ai",
   review: "review",
   expense: "expense",
   revenue: "revenue",
@@ -1784,6 +1826,83 @@ export default function App() {
     }
   }
 
+  async function saveAiProjectDraft(draft: AiFinanceDraft) {
+    const projectName = draft.projectName?.trim() || `${draft.clientName || "기관"} AI 입력 프로젝트`;
+    const institutionPaid = Number(draft.grossInstitutionPaid || 0);
+    const plannedPay = Number(draft.instructorPlannedPayTotal || 0);
+    const collectionTotal = Number(draft.companyCollectionTotal || Math.max(0, institutionPaid - plannedPay));
+    const companyRevenue = Number(draft.companyRevenue || collectionTotal || 0);
+    const receivedAmount = Number(draft.companyCollectionReceivedTotal || 0);
+    const validClientType = clientTypes.includes(draft.clientType as ClientType) ? draft.clientType as ClientType : "공공기관";
+    const instructorLines = (draft.instructors || []).map((item, index) => {
+      const label = item.name || `강사 ${index + 1}`;
+      return [
+        label,
+        item.hours != null ? `${item.hours}시간` : "",
+        item.mainSessions != null ? `메인 ${item.mainSessions}회` : "",
+        item.assistantSessions != null ? `보조 ${item.assistantSessions}회` : "",
+        item.institutionPaid != null ? `기관입금 ${formatWon(item.institutionPaid)}` : "",
+        item.plannedPay != null ? `실지급 ${formatWon(item.plannedPay)}` : "",
+        item.companyCollection != null ? `회사회수 ${formatWon(item.companyCollection)}` : ""
+      ].filter(Boolean).join(" · ");
+    });
+
+    const formData = new FormData();
+    formData.set("name", projectName);
+    formData.set("client_name", draft.clientName || "");
+    formData.set("client_type", validClientType);
+    formData.set("status", "정산 대기");
+    formData.set("project_major_category", "교육");
+    formData.set("project_middle_category", "접근성 교육");
+    formData.set("project_small_category", "발달장애");
+    formData.set("confirmed_amount", formatMoneyInputValue(String(companyRevenue)));
+    formData.set("received_amount", formatMoneyInputValue(String(receivedAmount)));
+    formData.set("receipt_status", receivedAmount > 0 && receivedAmount >= companyRevenue ? "수령 완료" : receivedAmount > 0 ? "일부 수령" : "미청구");
+    formData.set("owner_label", currentPerson?.name || "");
+    formData.set("operator_label", currentPerson?.name || "");
+    formData.set("revenue_tax_mode", "부가세 포함");
+    formData.set("memo", [
+      "AI 입력 도우미로 생성한 프로젝트 초안",
+      draft.paymentFlow === "instructor" ? "기관 지급 흐름: 기관이 강사에게 직접 입금" : "기관 지급 흐름: 회사로 직접 입금",
+      `기관이 강사에게 입금한 총액: ${formatWon(institutionPaid)}`,
+      `강사 실제 지급 예정 합계: ${formatWon(plannedPay)}`,
+      `회사 회수 예정액: ${formatWon(collectionTotal)}`,
+      `회사 매출 반영액: ${formatWon(companyRevenue)}`,
+      receivedAmount ? `이미 회수한 금액: ${formatWon(receivedAmount)}` : "",
+      instructorLines.length ? "강사별 정산:" : "",
+      ...instructorLines,
+      draft.memo || ""
+    ].filter(Boolean).join("\n"));
+
+    await createProject(formData);
+    setSection("revenue");
+  }
+
+  async function saveAiEmployeeDraft(candidate: AiEmploymentDraft) {
+    if (!candidate.name) throw new Error("직원 이름이 필요합니다.");
+    if (!candidate.employeeNumber || !candidate.phone) throw new Error("직원 등록에는 사번과 휴대전화 번호가 필요합니다.");
+    const monthlySalary = Number(candidate.monthlySalary || 0);
+    const annualSalary = Number(candidate.annualSalary || monthlySalary * 12 || 0);
+    const formData = new FormData();
+    formData.set("name", candidate.name);
+    formData.set("employee_number", candidate.employeeNumber);
+    formData.set("phone", candidate.phone);
+    formData.set("rank", "매니저");
+    formData.set("annual_salary", formatMoneyInputValue(String(annualSalary)));
+    formData.set("previous_annual_salary", "0");
+    formData.set("weekly_work_days", String(candidate.weeklyWorkDays || 5));
+    formData.set("daily_work_hours", String(candidate.dailyWorkHours || 8));
+    formData.set("monthly_capacity_hours", String(calcMonthlyCapacity(candidate.weeklyWorkDays || 5, candidate.dailyWorkHours || 8)));
+    formData.set("memo", [
+      "AI 입력 도우미로 생성한 고용 후보",
+      candidate.role ? `역할: ${candidate.role}` : "",
+      `월 인건비 예상: ${formatWon(monthlySalary || Math.round(annualSalary / 12))}`,
+      `연봉 예상: ${formatWon(annualSalary)}`
+    ].filter(Boolean).join("\n"));
+    await createPerson(formData);
+    setSection("compensation");
+  }
+
   async function updateExpense(formData: FormData) {
     try {
       const expenseId = String(formData.get("expense_id") || "");
@@ -2503,6 +2622,14 @@ export default function App() {
             onSave={saveFinancePlan}
           />
         )}
+        {section === "ai" && (
+          <AiFinanceAssistant
+            projects={projectsComputed}
+            people={people}
+            onSaveProject={saveAiProjectDraft}
+            onSaveEmployee={saveAiEmployeeDraft}
+          />
+        )}
         {section === "review" && (
           <ReviewInbox
             reviews={reviews}
@@ -2722,6 +2849,198 @@ function AuthScreen() {
         {message && <div className="auth-message">{message}</div>}
       </div>
     </div>
+  );
+}
+
+function AiFinanceAssistant({
+  projects,
+  people,
+  onSaveProject,
+  onSaveEmployee
+}: {
+  projects: ProjectComputed[];
+  people: Person[];
+  onSaveProject: (draft: AiFinanceDraft) => Promise<void>;
+  onSaveEmployee: (draft: AiEmploymentDraft) => Promise<void>;
+}) {
+  const [messages, setMessages] = useState<AiChatMessage[]>([
+    {
+      role: "assistant",
+      content: "어떤 프로젝트인지 편하게 말해주세요. 예: 발달장애 훈련센터에서 수업했고, 기관 돈은 강사에게 먼저 들어갔어요."
+    }
+  ]);
+  const [input, setInput] = useState("");
+  const [draft, setDraft] = useState<AiFinanceDraft | null>(null);
+  const [quickReplies, setQuickReplies] = useState<string[]>([
+    "기관이 강사에게 직접 입금했어요",
+    "강사는 5명이에요",
+    "프로젝트 저장 가능하게 정리해줘"
+  ]);
+  const [busy, setBusy] = useState(false);
+  const [saving, setSaving] = useState("");
+  const monthlyPayroll = people.filter((person) => person.is_active).reduce((sum, person) => sum + Number(person.annual_salary || 0) / 12, 0);
+  const draftRevenue = Number(draft?.companyRevenue || draft?.companyCollectionTotal || 0);
+  const draftCollection = Number(draft?.companyCollectionTotal || 0);
+  const draftInstructorPay = Number(draft?.instructorPlannedPayTotal || 0);
+
+  async function sendMessage(text: string) {
+    const content = text.trim();
+    if (!content || busy) return;
+    const nextMessages: AiChatMessage[] = [...messages, { role: "user", content }];
+    setMessages(nextMessages);
+    setInput("");
+    setBusy(true);
+    try {
+      const response = await fetch("/api/finance-ai", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          messages: nextMessages,
+          context: {
+            today: today(),
+            projectCount: projects.length,
+            peopleCount: people.length,
+            monthlyPayroll,
+            projects: projects.slice(0, 12).map((project) => ({
+              name: project.name,
+              clientName: project.client_name,
+              confirmedAmount: project._revenue,
+              receivedAmount: project.received_amount,
+              status: project.status
+            })),
+            people: people.slice(0, 30).map((person) => ({
+              name: person.name,
+              rank: person.rank,
+              monthlySalary: Math.round(Number(person.annual_salary || 0) / 12)
+            }))
+          }
+        })
+      });
+      if (!response.ok) {
+        const raw = await response.text();
+        throw new Error(raw || "AI 응답을 받지 못했습니다.");
+      }
+      const data = await response.json();
+      const reply = String(data.reply || "좋아요. 필요한 정보를 더 알려주세요.");
+      setMessages([...nextMessages, { role: "assistant", content: reply }]);
+      setDraft(data.draft || null);
+      setQuickReplies(Array.isArray(data.quickReplies) ? data.quickReplies.slice(0, 5) : []);
+    } catch (error) {
+      setMessages([...nextMessages, { role: "assistant", content: error instanceof Error ? error.message : "AI 연결에 실패했습니다." }]);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function saveProject() {
+    if (!draft) return;
+    setSaving("project");
+    try {
+      await onSaveProject(draft);
+    } finally {
+      setSaving("");
+    }
+  }
+
+  async function saveEmployee(candidate: AiEmploymentDraft, index: number) {
+    setSaving(`employee-${index}`);
+    try {
+      await onSaveEmployee(candidate);
+    } finally {
+      setSaving("");
+    }
+  }
+
+  return (
+    <section className="section active ai-assistant-section">
+      <div className="grid two ai-layout">
+        <div className="card solid ai-chat-card">
+          <div className="ai-card-head">
+            <div>
+              <h2 className="card-title">AI 경영 입력</h2>
+              <p className="card-sub">프로젝트 흐름을 말하면 부족한 금액·강사·회수 정보를 이어서 질문합니다.</p>
+            </div>
+            <span className="chip blue">GPT 연결</span>
+          </div>
+          <div className="ai-thread" aria-live="polite">
+            {messages.map((message, index) => (
+              <div className={`ai-bubble ${message.role}`} key={`${message.role}-${index}`}>
+                {message.content}
+              </div>
+            ))}
+            {busy && <div className="ai-bubble assistant">정리 중입니다...</div>}
+          </div>
+          <div className="ai-quick-replies">
+            {quickReplies.map((reply) => (
+              <button className="chip-choice" type="button" key={reply} onClick={() => sendMessage(reply)} disabled={busy}>{reply}</button>
+            ))}
+          </div>
+          <form className="ai-input-row" onSubmit={(event) => {
+            event.preventDefault();
+            sendMessage(input);
+          }}>
+            <input value={input} onChange={(event) => setInput(event.target.value)} placeholder="예: 기관 돈은 강사 5명에게 들어갔고, 회사가 220만원 회수해야 해" />
+            <button className="btn blue" disabled={busy}>{busy ? "질문 중" : "보내기"}</button>
+          </form>
+        </div>
+
+        <div className="card ai-draft-card">
+          <h2 className="card-title">자동 정리 초안</h2>
+          <p className="card-sub">금액이 맞으면 프로젝트로 저장하세요. 부족한 값은 AI가 계속 질문합니다.</p>
+          {draft ? (
+            <>
+              <div className="ai-draft-kpis">
+                <Metric title="회사 매출 반영액" copy="회수 예정 또는 직접 수금 기준" value={formatWon(draftRevenue)} />
+                <Metric title="회사 회수 예정" copy="강사가 먼저 받은 금액 중 회사 몫" value={formatWon(draftCollection)} />
+                <Metric title="강사 실지급 예정" copy="강사에게 남기거나 지급할 총액" value={formatWon(draftInstructorPay)} />
+              </div>
+              <div className="ai-draft-summary">
+                <strong>{draft.projectName || "프로젝트명 확인 필요"}</strong>
+                <span>{draft.clientName || "기관명 확인 필요"} · {draft.paymentFlow === "instructor" ? "강사 직접수령" : "회사 직접수령"}</span>
+              </div>
+              {(draft.instructors || []).length > 0 && (
+                <div className="ai-instructor-list">
+                  {(draft.instructors || []).map((item, index) => (
+                    <div className="ai-instructor-row" key={`${item.name || "강사"}-${index}`}>
+                      <div>
+                        <strong>{item.name || `강사 ${index + 1}`}</strong>
+                        <span>{item.hours || 0}시간 · 메인 {item.mainSessions || 0}회 · 보조 {item.assistantSessions || 0}회</span>
+                      </div>
+                      <b>{formatWon(item.companyCollection || 0)}</b>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <button className="btn blue wide" type="button" onClick={saveProject} disabled={saving === "project"}>
+                {saving === "project" ? "저장 중" : "사업·매출 프로젝트로 저장"}
+              </button>
+              {(draft.employmentCandidates || []).length > 0 && (
+                <div className="ai-employment-box">
+                  <h3>고용 시 월 인건비</h3>
+                  {(draft.employmentCandidates || []).map((candidate, index) => {
+                    const monthly = Number(candidate.monthlySalary || (candidate.annualSalary ? candidate.annualSalary / 12 : 0));
+                    const canSave = Boolean(candidate.name && candidate.employeeNumber && candidate.phone);
+                    return (
+                      <div className="ai-employment-row" key={`${candidate.name || "후보"}-${index}`}>
+                        <div>
+                          <strong>{candidate.name || "이름 확인 필요"}</strong>
+                          <span>{candidate.role || "역할 미정"} · 월 {formatWon(monthly)} · 연 {formatWon(candidate.annualSalary || monthly * 12)}</span>
+                        </div>
+                        <button className="btn small" type="button" disabled={!canSave || saving === `employee-${index}`} onClick={() => saveEmployee(candidate, index)}>
+                          {canSave ? "직원 등록" : "사번·휴대폰 필요"}
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </>
+          ) : (
+            <EmptyState text="대화를 시작하면 프로젝트 매출, 강사 정산, 고용 시 월 인건비 초안이 여기에 정리됩니다." />
+          )}
+        </div>
+      </div>
+    </section>
   );
 }
 
