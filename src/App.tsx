@@ -161,7 +161,7 @@ const sectionMeta: Record<SectionKey, { title: string; desc: string }> = {
   },
   expense: {
     title: "지출결의",
-    desc: "영수증을 등록하고 노션 지출결의 기준(결제방식·사용용도·증빙)에 맞춰 검토 요약과 상세 목록을 함께 봅니다."
+    desc: "영수증을 등록하고 노션 지출결의 기준(결제방식·사용용도·증빙)에 맞춰 금액 요약과 상세 목록을 함께 봅니다."
   },
   revenue: {
     title: "사업·매출관리",
@@ -689,6 +689,38 @@ function getProjectCategoryLabel(project: BusinessProject) {
   }
   if (project.project_group?.length) return project.project_group.join(" > ");
   return projectMemoValue(project, "프로젝트 분류") || "-";
+}
+
+const targetMarginByProjectGroup: Record<string, number> = {
+  "교육": 0.2,
+  "문서작업": 0.35,
+  "홈페이지": 0.35,
+  "메타버스": 0.35,
+  "마케팅": 0.25,
+  "행사": 0.4,
+  "전시": 0.2,
+  "영상": 0.35,
+  "제품 제작": 0.5,
+  "디자인": 0.35,
+  "광고/홍보": 0.25,
+  "연구": 0.3,
+  "개발": 0.35,
+  "러플 마진 계산기": 0.3,
+  "기타": 1
+};
+
+function getProjectMajorLabel(project: BusinessProject) {
+  return project.project_major_category || project.project_group?.[0] || projectMemoValue(project, "프로젝트 분류") || "기타";
+}
+
+function getProjectTargetMargin(project: BusinessProject) {
+  const group = getProjectMajorLabel(project);
+  return targetMarginByProjectGroup[group] ?? 0.3;
+}
+
+function getProjectRevenueMonth(project: BusinessProject) {
+  const createdAt = (project as BusinessProject & { created_at?: string }).created_at;
+  return String(project.revenue_recognition_date || project.received_date || project.payment_due_date || createdAt || today()).slice(0, 7);
 }
 
 function getProjectNumber(project: BusinessProject, fieldValue: number | null | undefined, memoLabel: string) {
@@ -3403,17 +3435,11 @@ function Expense({
   const pending = expenses.filter((item) => item.review_status === "검토 전");
   const currentMonth = today().slice(0, 7);
   const recurringExpenses = expenses.filter(isRecurringExpense);
-  const monthExpenses = expenses.filter((item) => {
-    if (isRecurringExpense(item)) return isMonthlyRecurringExpense(item) || String(item.used_at || "").startsWith(currentMonth);
-    return String(item.used_at || "").startsWith(currentMonth);
-  });
+  const monthExpenses = expenses.filter((item) => !isRecurringExpense(item) && String(item.used_at || "").startsWith(currentMonth));
+  const monthRecurringExpenses = recurringExpenses.filter((item) => isMonthlyRecurringExpense(item) || String(item.used_at || "").startsWith(currentMonth));
   const recurringTotal = recurringExpenses.reduce((sum, item) => sum + Number(item.amount || 0), 0);
-  const monthNonRecurringTotal = expenses
-    .filter((item) => !isRecurringExpense(item) && String(item.used_at || "").startsWith(currentMonth))
-    .reduce((sum, item) => sum + Number(item.amount || 0), 0);
-  const monthRecurringTotal = recurringExpenses
-    .filter((item) => isMonthlyRecurringExpense(item) || String(item.used_at || "").startsWith(currentMonth))
-    .reduce((sum, item) => sum + Number(item.amount || 0), 0);
+  const monthNonRecurringTotal = monthExpenses.reduce((sum, item) => sum + Number(item.amount || 0), 0);
+  const monthRecurringTotal = monthRecurringExpenses.reduce((sum, item) => sum + Number(item.amount || 0), 0);
   const monthTotal = monthNonRecurringTotal + monthRecurringTotal;
   const totalExpense = expenses.reduce((sum, item) => sum + Number(item.amount || 0), 0);
   const pendingTotal = pending.reduce((sum, item) => sum + Number(item.amount || 0), 0);
@@ -3427,7 +3453,7 @@ function Expense({
     },
     month: {
       title: `${Number(currentMonth.slice(5))}월 지출 상세`,
-      desc: "이번 달 사용일 기준 지출과 매월 반복 지출을 함께 반영합니다.",
+      desc: "목록은 일반 지출만 보여주고, 월 합계에는 정기결제 금액까지 반영합니다.",
       total: monthTotal,
       items: monthExpenses,
       tone: "red"
@@ -3459,20 +3485,23 @@ function Expense({
   }, {})).sort((a, b) => b[1] - a[1]);
   const activeItems = activeUsage === "전체" ? activeDetail.items : activeDetail.items.filter((item) => getExpenseUsageDisplay(item) === activeUsage);
   const activeFilteredTotal = activeItems.reduce((sum, item) => sum + Number(item.amount || 0), 0);
+  const visibleDetailTotal = activeMetric === "month" ? monthNonRecurringTotal : activeDetail.total;
   const activeTopItems = [...activeItems].sort((a, b) => Number(b.amount || 0) - Number(a.amount || 0)).slice(0, 7);
   const maxActiveAmount = Math.max(...activeTopItems.map((item) => Number(item.amount || 0)), 1);
   const usageBreakdown = usageBreakdownAll.slice(0, 7);
+  const tableExpenses = activeMetric === "recurring" && showRecurringDetails ? recurringExpenses : expenses.filter((item) => !isRecurringExpense(item));
 
   return (
     <section className="section active">
+      <div className="expense-month-spotlight" aria-label="이번달 누적 사용비용">
+        <span>{Number(currentMonth.slice(5))}월 누적 사용비용</span>
+        <strong>{formatWon(monthTotal)}</strong>
+        <em>일반 {formatWon(monthNonRecurringTotal)} · 정기 {formatWon(monthRecurringTotal)}</em>
+      </div>
       <div className="section-toolbar">
         <button className="btn small" onClick={onManageCard}>결제수단(카드) 관리</button>
         <button className="btn small blue" onClick={onCreate}>빠른 지출 등록</button>
         <button className="btn small" onClick={onRecurring}>반복 지출</button>
-        <button className="btn small notification-btn" onClick={() => setActiveMetric("pending")}>
-          검토 요약
-          {pending.length > 0 && <span className="notify-dot" aria-label="검토 필요" />}
-        </button>
         <button className="btn small" onClick={onManageMobileDevices}>모바일 기기 관리</button>
       </div>
       <div className="grid four expense-summary">
@@ -3488,7 +3517,7 @@ function Expense({
             <p className="card-sub">{activeDetail.desc} {activeUsage !== "전체" && `${activeUsage}만 보고 있습니다.`}</p>
           </div>
           <div className={`expense-detail-total ${activeDetail.tone}`}>
-            <span>{activeItems.length}건</span>
+            <span>{activeMetric === "month" ? `일반 ${activeItems.length}건` : `${activeItems.length}건`}</span>
             <strong>{formatWon(activeUsage === "전체" ? activeDetail.total : activeFilteredTotal)}</strong>
           </div>
         </div>
@@ -3506,7 +3535,7 @@ function Expense({
         {(activeMetric !== "recurring" || showRecurringDetails) && usageBreakdown.length > 0 && (
           <div className="expense-usage-strip" aria-label="용도별 지출 필터">
             <button type="button" className={activeUsage === "전체" ? "active" : ""} onClick={() => setActiveUsage("전체")}>
-              <span>전체</span><strong>{formatWon(activeDetail.total)}</strong>
+              <span>{activeMetric === "month" ? "일반 지출" : "전체"}</span><strong>{formatWon(visibleDetailTotal)}</strong>
             </button>
             {usageBreakdown.map(([usage, amount], index) => (
               <button type="button" className={`tone-${index % 4} ${activeUsage === usage ? "active" : ""}`} key={usage} onClick={() => setActiveUsage(usage)}>
@@ -3516,7 +3545,7 @@ function Expense({
           </div>
         )}
         {activeDetail.items.length === 0 ? (
-          <EmptyState text="표시할 세부 항목이 없습니다." />
+          <EmptyState text={activeMetric === "month" ? "이번 달 일반 지출은 없습니다. 정기결제는 상단 금액에만 포함됩니다." : "표시할 세부 항목이 없습니다."} />
         ) : (
           <>
             {activeMetric === "recurring" && showRecurringDetails && activeItems.length > 0 && (
@@ -3560,7 +3589,7 @@ function Expense({
             <div className="expense-breakdown">
               <h3>용도별 비중</h3>
               {usageBreakdown.map(([usage, amount]) => {
-                const percent = activeDetail.total ? Math.round((amount / activeDetail.total) * 100) : 0;
+                const percent = visibleDetailTotal ? Math.round((amount / visibleDetailTotal) * 100) : 0;
                 return (
                   <div className="expense-breakdown-row" key={usage}>
                     <span>{usage}</span>
@@ -3575,45 +3604,13 @@ function Expense({
           </>
         )}
       </div>
-      <div className="grid two">
-        <div className="card">
-          <h2 className="card-title">지출결의 검토 요약</h2>
-          <p className="card-sub">검토가 필요한 항목을 누르면 무엇을 검토할지 상세가 열립니다.</p>
-          {expenses.length === 0 ? (
-            <EmptyState text="등록된 지출결의가 없습니다." />
-          ) : (
-            <div className="queue">
-              {pending.slice(0, 5).map((item) => (
-                <div className="queue-item orange clickable" key={item.id} onClick={() => onOpenExpense(item)}>
-                  <div>
-                    <strong>{item.purpose}</strong>
-                    <span>{getExpenseUsageDisplay(item)} · {item.payment_method}{item.card_id ? ` · ${cards.find((c) => c.id === item.card_id)?.label || ""}` : ""}</span>
-                  </div>
-                  <div className="count">{formatWon(item.amount)}</div>
-                </div>
-              ))}
-              {pending.length === 0 && <EmptyState text="검토 전 지출이 없습니다." />}
-            </div>
-          )}
-        </div>
-        <div className="card">
-          <h2 className="card-title">이번달 누적 사용비용</h2>
-          <p className="card-sub">월 지출에는 이번 달 사용분과 매월 반복 지출이 같이 반영됩니다.</p>
-          <div className="expense-month-total">
-            <span>{Number(currentMonth.slice(5))}월 사용 합계</span>
-            <strong>{formatWon(monthTotal)}</strong>
-            <em>정기 {formatWon(monthRecurringTotal)} · 일반 {formatWon(monthNonRecurringTotal)}</em>
-          </div>
-        </div>
-      </div>
-
       <div className="card solid mt">
         <div className="table-title-row">
-          <h2 className="card-title">지출결의 상세 목록</h2>
+          <h2 className="card-title">{activeMetric === "recurring" && showRecurringDetails ? "정기결제 상세 목록" : "지출결의 상세 목록"}</h2>
           <div className="table-total-chip">이번달 누적 {formatWon(monthTotal)}</div>
         </div>
-        <p className="card-sub">항목을 누르면 증빙, 결제수단, 이체 내용을 확인하는 팝업이 열립니다.</p>
-        {expenses.length === 0 ? (
+        <p className="card-sub">{activeMetric === "recurring" && showRecurringDetails ? "정기결제 항목만 모아 봅니다." : "일반 지출결의만 기본으로 보여줍니다. 정기결제는 정기 결제 카드를 눌러 펼치세요."}</p>
+        {tableExpenses.length === 0 ? (
           <EmptyState text="등록된 지출결의가 없습니다. ‘빠른 지출 등록’으로 첫 항목을 만들어보세요." />
         ) : (
           <div className="table-scroll">
@@ -3633,7 +3630,7 @@ function Expense({
                 </tr>
               </thead>
               <tbody>
-                {expenses.map((expense) => (
+                {tableExpenses.map((expense) => (
                   <tr key={expense.id} className="clickable" onClick={() => onOpenExpense(expense)}>
                     <td>{expense.used_at}{isRecurringExpense(expense) ? " 반복" : ""}</td>
                     <td>{expense.purpose}</td>
@@ -3681,6 +3678,31 @@ function Revenue({
     },
     { revenue: 0, cost: 0, profit: 0, receivable: 0, monthly: 0 }
   );
+  const currentYear = today().slice(0, 4);
+  const marginGroupMap = new Map<string, { label: string; revenue: number; cost: number; profit: number; count: number; target: number }>();
+  projects.forEach((project) => {
+    const label = getProjectMajorLabel(project);
+    const prev = marginGroupMap.get(label) || { label, revenue: 0, cost: 0, profit: 0, count: 0, target: getProjectTargetMargin(project) };
+    prev.revenue += project._revenue;
+    prev.cost += project._cost;
+    prev.profit += project._profit;
+    prev.count += 1;
+    prev.target = getProjectTargetMargin(project);
+    marginGroupMap.set(label, prev);
+  });
+  const marginRows = projectGroups
+    .filter((group) => group !== "러플 마진 계산기")
+    .map((group) => marginGroupMap.get(group) || { label: group, revenue: 0, cost: 0, profit: 0, count: 0, target: targetMarginByProjectGroup[group] ?? 0.3 })
+    .filter((row, index) => row.count > 0 || index < 8)
+    .slice(0, 8);
+  const monthRows = Array.from({ length: 12 }, (_, index) => {
+    const month = `${currentYear}-${String(index + 1).padStart(2, "0")}`;
+    const monthlyProjects = projects.filter((project) => getProjectRevenueMonth(project).startsWith(month));
+    const revenue = monthlyProjects.reduce((sum, project) => sum + project._revenue, 0);
+    const cost = monthlyProjects.reduce((sum, project) => sum + project._cost, 0);
+    return { month, revenue, cost, profit: revenue - cost };
+  });
+  const maxMonthlyProfit = Math.max(...monthRows.map((row) => Math.abs(row.profit)), 1);
 
   return (
     <section className="section active">
@@ -3706,9 +3728,68 @@ function Revenue({
         <KpiCard compact label="미수금" value={formatWon(totals.receivable)} chip="확정−수령" tone="orange" empty={projects.length === 0} />
       </div>
 
+      <div className="revenue-notion-board section-gap">
+        <div className="card solid notion-table-card">
+          <div className="table-title-row">
+            <h2 className="card-title">{currentYear} 연간 거래 총괄 DB</h2>
+            <div className="table-total-chip">전체 마진 {formatPercent(totals.revenue ? totals.profit / totals.revenue : 0)}</div>
+          </div>
+          <div className="table-scroll notion-table-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th style={{ width: 150 }}>사업 유형</th>
+                  <th className="num" style={{ width: 120 }}>순이익</th>
+                  <th className="num" style={{ width: 120 }}>총 비용</th>
+                  <th className="num" style={{ width: 120 }}>마진 평균률</th>
+                  <th className="num" style={{ width: 100 }}>기준 마진</th>
+                  <th style={{ width: 120 }}>전체 마진</th>
+                </tr>
+              </thead>
+              <tbody>
+                {marginRows.map((row) => {
+                  const marginRate = row.revenue ? row.profit / row.revenue : 0;
+                  const passed = row.count > 0 && marginRate >= row.target;
+                  return (
+                    <tr key={row.label}>
+                      <td><strong className="notion-business-name">{row.label}</strong></td>
+                      <td className="num">{formatWon(row.profit)}</td>
+                      <td className="num">{formatWon(row.cost)}</td>
+                      <td className="num">{row.count ? formatPercent(marginRate) : "-"}</td>
+                      <td className="num">{formatPercent(row.target)}</td>
+                      <td><span className={`status-dot-chip ${passed ? "green" : "red"}`}>{passed ? "기준 이상" : "기준 미달"}</span></td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <div className="card solid notion-chart-card">
+          <div className="table-title-row">
+            <h2 className="card-title">{currentYear} 월별 순이익 상세</h2>
+            <div className="table-total-chip">순이익 {formatWon(totals.profit)}</div>
+          </div>
+          <div className="monthly-profit-chart" aria-label="월별 순이익 그래프">
+            {monthRows.map((row) => {
+              const height = Math.max(4, Math.round((Math.abs(row.profit) / maxMonthlyProfit) * 100));
+              return (
+                <div className="monthly-profit-column" key={row.month}>
+                  <div className="monthly-profit-track">
+                    <i className={row.profit >= 0 ? "positive" : "negative"} style={{ height: `${height}%` }} />
+                  </div>
+                  <span>{Number(row.month.slice(5))}월</span>
+                  <strong>{formatWon(row.profit)}</strong>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+
       <div className="card solid mt revenue-table-card">
         <div className="table-title-row">
-          <h2 className="card-title">2026 연간 거래 총괄 DB</h2>
+          <h2 className="card-title">프로젝트 상세 DB</h2>
           <div className="table-total-chip">순이익 {formatWon(totals.profit)}</div>
         </div>
         <p className="card-sub">프로젝트를 누르면 매출·비용·순이익·마진율 인포그래픽과 세부 내용이 열립니다. 비용은 연결된 지출결의에서 자동 집계됩니다.</p>
@@ -3849,7 +3930,7 @@ function Compensation({
             <EmptyState text="등록된 상여금이 없습니다. ‘상여금 추가’로 등록하세요." />
           ) : (
             <div className="bonus-compact-list">
-              {bonuses.slice(0, 5).map((bonus) => (
+              {bonuses.slice(0, 3).map((bonus) => (
                 <button type="button" className="bonus-compact-row" key={bonus.id}>
                   <span>
                     <strong>{people.find((person) => person.id === bonus.person_id)?.name || "지급 대상 미정"}</strong>

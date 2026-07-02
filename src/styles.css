@@ -4010,3 +4010,287 @@ input:focus, select:focus, textarea:focus {
     white-space: normal;
   }
 }
+
+/* v8: finance page polish, expense focus area, compact compensation, revenue Notion board */
+.expense-month-spotlight {
+  display: grid;
+  gap: 7px;
+  width: min(100%, 430px);
+  min-height: 118px;
+  margin: -6px 0 14px auto;
+  padding: 22px 24px;
+  border-radius: 26px;
+  background:
+    radial-gradient(circle at 100% 0%, rgba(240, 80, 110, 0.16), transparent 34%),
+    linear-gradient(135deg, rgba(255, 255, 255, 0.96), rgba(248, 250, 252, 0.92));
+  border: 1px solid rgba(16, 24, 40, 0.07);
+  box-shadow: 0 18px 48px rgba(41, 55, 82, 0.09);
+  text-align: right;
+}
+
+.expense-month-spotlight span,
+.expense-month-spotlight em {
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 760;
+}
+
+.expense-month-spotlight strong {
+  color: #d94863;
+  font-size: clamp(30px, 9.2cqw, 46px);
+  font-weight: 860;
+  line-height: 1;
+  letter-spacing: 0;
+  white-space: nowrap;
+}
+
+.expense-month-spotlight em {
+  color: var(--muted-2);
+  font-style: normal;
+}
+
+.expense-detail-panel .card-sub {
+  margin-bottom: 0;
+}
+
+.expense-detail-panel .empty-state {
+  margin-top: 12px;
+}
+
+.finance-metric,
+.finance-band,
+.finance-plan-form,
+.finance-forecast {
+  border-radius: 28px;
+  background: rgba(255, 255, 255, 0.9);
+  box-shadow: 0 18px 48px rgba(41, 55, 82, 0.06);
+}
+
+.finance-metric {
+  padding: 20px;
+}
+
+.finance-metric em,
+.finance-note,
+.finance-form-check {
+  border-radius: 18px;
+}
+
+.finance-band,
+.finance-plan-form {
+  padding: 24px;
+}
+
+.finance-form-grid label {
+  border-radius: 18px;
+}
+
+.compensation-actions {
+  margin-bottom: 0;
+}
+
+.compensation-highlights {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.06fr);
+  margin-top: 84px;
+  margin-bottom: 18px;
+}
+
+.compensation-highlights .point-card {
+  min-height: 148px;
+  padding: 24px 28px;
+}
+
+.compensation-highlights .point-value {
+  font-size: clamp(30px, 7.2cqw, 48px);
+}
+
+@media (min-width: 1101px) {
+  .compensation-layout {
+    grid-template-columns: minmax(0, 1fr) minmax(260px, 0.38fr);
+  }
+}
+
+.compact-bonus-card {
+  padding: 12px;
+}
+
+.compact-bonus-card .card-title {
+  font-size: 15px;
+}
+
+.compact-bonus-card .card-sub {
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.bonus-card-head {
+  margin-bottom: 8px;
+}
+
+.bonus-card-head > strong {
+  font-size: clamp(15px, 5.8cqw, 20px);
+}
+
+.bonus-compact-list {
+  gap: 6px;
+}
+
+.bonus-compact-row {
+  padding: 8px 9px;
+  border-radius: 12px;
+}
+
+.bonus-compact-row strong,
+.bonus-compact-row b {
+  font-size: 12px;
+}
+
+.bonus-compact-row em {
+  font-size: 11px;
+}
+
+.revenue-notion-board {
+  display: grid;
+  grid-template-columns: minmax(0, 1.08fr) minmax(380px, 0.92fr);
+  gap: 18px;
+  align-items: stretch;
+}
+
+.notion-table-card,
+.notion-chart-card {
+  padding: 20px;
+  overflow: hidden;
+}
+
+.notion-table-scroll table {
+  min-width: 760px;
+  border-collapse: separate;
+  border-spacing: 0;
+}
+
+.notion-table-card th,
+.notion-table-card td {
+  padding-top: 12px;
+  padding-bottom: 12px;
+}
+
+.notion-table-card th {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 820;
+  background: rgba(255, 255, 255, 0.96);
+}
+
+.notion-business-name {
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 820;
+}
+
+.status-dot-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  white-space: nowrap;
+  color: var(--ink-2);
+  font-size: 12px;
+  font-weight: 760;
+}
+
+.status-dot-chip::before {
+  content: "";
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  background: #d94863;
+}
+
+.status-dot-chip.green::before {
+  background: #69a85a;
+}
+
+.monthly-profit-chart {
+  display: grid;
+  grid-template-columns: repeat(12, minmax(34px, 1fr));
+  gap: 10px;
+  min-height: 292px;
+  padding: 20px 6px 0;
+  border-top: 1px solid rgba(16, 24, 40, 0.06);
+}
+
+.monthly-profit-column {
+  min-width: 0;
+  display: grid;
+  grid-template-rows: minmax(170px, 1fr) auto auto;
+  gap: 8px;
+  justify-items: center;
+}
+
+.monthly-profit-track {
+  position: relative;
+  width: 100%;
+  min-height: 170px;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  border-radius: 999px 999px 8px 8px;
+  background:
+    repeating-linear-gradient(to top, rgba(16, 24, 40, 0.05), rgba(16, 24, 40, 0.05) 1px, transparent 1px, transparent 34px),
+    rgba(248, 250, 252, 0.76);
+}
+
+.monthly-profit-track i {
+  display: block;
+  width: min(22px, 58%);
+  min-height: 4px;
+  border-radius: 999px 999px 7px 7px;
+  background: #3182f6;
+}
+
+.monthly-profit-track i.negative {
+  background: #d94863;
+}
+
+.monthly-profit-column span,
+.monthly-profit-column strong {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.monthly-profit-column span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 760;
+}
+
+.monthly-profit-column strong {
+  color: var(--ink-2);
+  font-size: 11px;
+  font-weight: 780;
+}
+
+@media (max-width: 1100px) {
+  .revenue-notion-board {
+    grid-template-columns: 1fr;
+  }
+
+  .monthly-profit-chart {
+    overflow-x: auto;
+    grid-template-columns: repeat(12, minmax(56px, 1fr));
+  }
+}
+
+@media (max-width: 760px) {
+  .expense-month-spotlight {
+    margin-left: 0;
+    text-align: left;
+  }
+
+  .compensation-highlights {
+    grid-template-columns: 1fr;
+    margin-top: 36px;
+  }
+}
