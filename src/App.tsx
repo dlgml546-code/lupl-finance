@@ -683,6 +683,18 @@ function getProjectPlainMemo(project: BusinessProject) {
     .trim();
 }
 
+function getProjectOperatorLabel(project: BusinessProject) {
+  return project.operator_label || projectMemoValue(project, "실무 담당자") || projectMemoValue(project, "실무담당자") || projectMemoValue(project, "담당자") || "";
+}
+
+function getProjectContact(project: BusinessProject) {
+  return project.contact || projectMemoValue(project, "실무 담당자 연락처") || "";
+}
+
+function getProjectClientName(project: BusinessProject) {
+  return project.client_name || projectMemoValue(project, "거래처/기관명") || "";
+}
+
 function getProjectCategoryLabel(project: BusinessProject) {
   if (project.project_major_category || project.project_middle_category || project.project_small_category) {
     return [project.project_major_category, project.project_middle_category, project.project_small_category].filter(Boolean).join(" > ");
@@ -3801,10 +3813,10 @@ function Revenue({
               <thead>
                 <tr>
                   <th style={{ width: 170 }}>프로젝트</th>
+                  <th style={{ width: 320 }}>상세 내용</th>
                   <th style={{ width: 100 }}>거래처 구분</th>
                   <th style={{ width: 110 }}>상태</th>
                   <th style={{ width: 90 }}>책임자</th>
-                  <th style={{ width: 110 }}>담당자</th>
                   <th style={{ width: 140 }}>분류</th>
                   <th className="num" style={{ width: 120 }}>확정금액</th>
                   <th className="num" style={{ width: 120 }}>월 반복</th>
@@ -3815,22 +3827,41 @@ function Revenue({
                 </tr>
               </thead>
               <tbody>
-                {projects.map((row) => (
-                  <tr key={row.id} className="clickable" onClick={() => onOpenProject(row)}>
-                    <td><span className="project-name-cell">{row.name}</span></td>
-                    <td>{row.client_type || "-"}</td>
-                    <td><span className="status-tag">{row.status}</span></td>
-                    <td>{row.owner_label || "-"}</td>
-                    <td>{projectMemoValue(row, "실무담당자") || projectMemoValue(row, "담당자") || "-"}</td>
-                    <td>{getProjectCategoryLabel(row)}</td>
-                    <td className="num">{formatWon(row._revenue)}</td>
-                    <td className="num">{row._isMonthlyRecurring ? formatWon(row._monthlyRevenue) : "-"}</td>
-                    <td className="num">{formatWon(row._cost)}</td>
-                    <td className="num">{formatWon(row._profit)}</td>
-                    <td className="num">{formatPercent(row._marginRate)}</td>
-                    <td><span className={`chip ${row._receivable > 0 ? "orange" : "green"}`}>{row._receivable > 0 ? "미수 있음" : "수금 완료"}</span></td>
-                  </tr>
-                ))}
+                {projects.map((row) => {
+                  const clientName = getProjectClientName(row);
+                  const operator = getProjectOperatorLabel(row);
+                  const contact = getProjectContact(row);
+                  const dueDate = row.due_date || projectMemoValue(row, "마감 날짜");
+                  const paymentDueDate = row.payment_due_date || projectMemoValue(row, "입금 예정일");
+                  const plainMemo = getProjectPlainMemo(row);
+                  return (
+                    <tr key={row.id} className="clickable project-detail-db-row" onClick={() => onOpenProject(row)}>
+                      <td>
+                        <span className="project-name-cell">{row.name}</span>
+                        <span className="project-client-cell">{clientName || "거래처 미입력"}</span>
+                      </td>
+                      <td>
+                        <div className="project-detail-cell">
+                          <span><b>실무</b>{operator || "-"}</span>
+                          <span><b>연락</b>{contact || "-"}</span>
+                          <span><b>입금</b>{paymentDueDate || "-"}</span>
+                          <span><b>마감</b>{dueDate || "-"}</span>
+                          {plainMemo && <em>{plainMemo}</em>}
+                        </div>
+                      </td>
+                      <td>{row.client_type || "-"}</td>
+                      <td><span className="status-tag">{row.status}</span></td>
+                      <td>{row.owner_label || projectMemoValue(row, "책임자") || "-"}</td>
+                      <td>{getProjectCategoryLabel(row)}</td>
+                      <td className="num">{formatWon(row._revenue)}</td>
+                      <td className="num">{row._isMonthlyRecurring ? formatWon(row._monthlyRevenue) : "-"}</td>
+                      <td className="num">{formatWon(row._cost)}</td>
+                      <td className="num">{formatWon(row._profit)}</td>
+                      <td className="num">{formatPercent(row._marginRate)}</td>
+                      <td><span className={`chip ${row._receivable > 0 ? "orange" : "green"}`}>{row._receivable > 0 ? "미수 있음" : "수금 완료"}</span></td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
