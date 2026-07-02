@@ -3397,8 +3397,9 @@ function Expense({
   onManageMobileDevices: () => void;
 }) {
   type ExpenseMetricKey = "recurring" | "month" | "total" | "pending";
-  const [activeMetric, setActiveMetric] = useState<ExpenseMetricKey>("recurring");
+  const [activeMetric, setActiveMetric] = useState<ExpenseMetricKey>("month");
   const [activeUsage, setActiveUsage] = useState("전체");
+  const [showRecurringDetails, setShowRecurringDetails] = useState(false);
   const pending = expenses.filter((item) => item.review_status === "검토 전");
   const currentMonth = today().slice(0, 7);
   const recurringExpenses = expenses.filter(isRecurringExpense);
@@ -3418,7 +3419,7 @@ function Expense({
   const pendingTotal = pending.reduce((sum, item) => sum + Number(item.amount || 0), 0);
   const metricDetails: Record<ExpenseMetricKey, { title: string; desc: string; total: number; items: ExpenseRequest[]; tone: "blue" | "red" | "orange" | "green" }> = {
     recurring: {
-      title: "정기 결제 상세",
+      title: "정기 결제 요약",
       desc: "매월 반복되거나 구독/정기결제로 표시된 지출입니다.",
       total: recurringTotal,
       items: recurringExpenses,
@@ -3449,6 +3450,7 @@ function Expense({
   const activeDetail = metricDetails[activeMetric];
   useEffect(() => {
     setActiveUsage("전체");
+    if (activeMetric !== "recurring") setShowRecurringDetails(false);
   }, [activeMetric]);
   const usageBreakdownAll = Object.entries(activeDetail.items.reduce<Record<string, number>>((acc, item) => {
     const key = getExpenseUsageDisplay(item);
@@ -3474,7 +3476,7 @@ function Expense({
         <button className="btn small" onClick={onManageMobileDevices}>모바일 기기 관리</button>
       </div>
       <div className="grid four expense-summary">
-        <KpiCard compact label="정기 결제" value={formatWon(recurringTotal)} chip={`${recurringExpenses.length}건`} tone="blue" empty={recurringExpenses.length === 0} active={activeMetric === "recurring"} onClick={() => setActiveMetric("recurring")} />
+        <KpiCard compact label="정기 결제" value={formatWon(recurringTotal)} chip={`${recurringExpenses.length}건`} tone="blue" empty={recurringExpenses.length === 0} active={activeMetric === "recurring"} onClick={() => { setActiveMetric("recurring"); setShowRecurringDetails(false); }} />
         <KpiCard compact label={`${Number(currentMonth.slice(5))}월 지출`} value={formatWon(monthTotal)} chip="이번 달" tone="red" empty={expenses.length === 0} active={activeMetric === "month"} onClick={() => setActiveMetric("month")} />
         <KpiCard compact label="총 지출" value={formatWon(totalExpense)} chip={`${expenses.length}건`} tone="orange" empty={expenses.length === 0} active={activeMetric === "total"} onClick={() => setActiveMetric("total")} />
         <KpiCard compact label="검토 대기" value={formatWon(pendingTotal)} chip={`${pending.length}건`} tone="green" empty={pending.length === 0} active={activeMetric === "pending"} onClick={() => setActiveMetric("pending")} />
@@ -3482,7 +3484,7 @@ function Expense({
       <div className="card solid expense-detail-panel">
         <div className="expense-detail-head">
           <div>
-            <h2 className="card-title">{activeDetail.title}</h2>
+            <h2 className="card-title">{activeMetric === "recurring" && showRecurringDetails ? "정기 결제 상세" : activeDetail.title}</h2>
             <p className="card-sub">{activeDetail.desc} {activeUsage !== "전체" && `${activeUsage}만 보고 있습니다.`}</p>
           </div>
           <div className={`expense-detail-total ${activeDetail.tone}`}>
@@ -3490,7 +3492,18 @@ function Expense({
             <strong>{formatWon(activeUsage === "전체" ? activeDetail.total : activeFilteredTotal)}</strong>
           </div>
         </div>
-        {usageBreakdown.length > 0 && (
+        {activeMetric === "recurring" && activeDetail.items.length > 0 && (
+          <div className="recurring-toggle-summary">
+            <div>
+              <strong>매월 반복 지출 {formatWon(recurringTotal)}</strong>
+              <span>{recurringExpenses.length}건 · {recurringExpenses.slice(0, 3).map((item) => item.purpose).join(" · ") || "정기결제 없음"}</span>
+            </div>
+            <button className="btn small" type="button" onClick={() => setShowRecurringDetails((value) => !value)}>
+              {showRecurringDetails ? "상세 접기" : "정기결제 상세 보기"}
+            </button>
+          </div>
+        )}
+        {(activeMetric !== "recurring" || showRecurringDetails) && usageBreakdown.length > 0 && (
           <div className="expense-usage-strip" aria-label="용도별 지출 필터">
             <button type="button" className={activeUsage === "전체" ? "active" : ""} onClick={() => setActiveUsage("전체")}>
               <span>전체</span><strong>{formatWon(activeDetail.total)}</strong>
@@ -3506,7 +3519,7 @@ function Expense({
           <EmptyState text="표시할 세부 항목이 없습니다." />
         ) : (
           <>
-            {activeMetric === "recurring" && activeItems.length > 0 && (
+            {activeMetric === "recurring" && showRecurringDetails && activeItems.length > 0 && (
               <div className="recurring-runway compact" aria-label="정기결제 금액 비중">
                 {[...activeItems].sort((a, b) => Number(b.amount || 0) - Number(a.amount || 0)).map((item, index) => {
               const share = activeDetail.total ? Math.max(18, Math.round((Number(item.amount || 0) / activeDetail.total) * 100)) : 100;
@@ -3527,6 +3540,7 @@ function Expense({
                 })}
               </div>
             )}
+          {(activeMetric !== "recurring" || showRecurringDetails) && (
           <div className="expense-detail-grid">
             <div className="expense-detail-bars">
               {activeTopItems.map((item) => {
@@ -3557,6 +3571,7 @@ function Expense({
               })}
             </div>
           </div>
+          )}
           </>
         )}
       </div>
@@ -3691,8 +3706,11 @@ function Revenue({
         <KpiCard compact label="미수금" value={formatWon(totals.receivable)} chip="확정−수령" tone="orange" empty={projects.length === 0} />
       </div>
 
-      <div className="card solid mt">
-        <h2 className="card-title">프로젝트 목록</h2>
+      <div className="card solid mt revenue-table-card">
+        <div className="table-title-row">
+          <h2 className="card-title">2026 연간 거래 총괄 DB</h2>
+          <div className="table-total-chip">순이익 {formatWon(totals.profit)}</div>
+        </div>
         <p className="card-sub">프로젝트를 누르면 매출·비용·순이익·마진율 인포그래픽과 세부 내용이 열립니다. 비용은 연결된 지출결의에서 자동 집계됩니다.</p>
         {projects.length === 0 ? (
           <EmptyState text="등록된 프로젝트가 없습니다. ‘새 프로젝트 등록’으로 외주용역 항목을 추가하세요." />
@@ -3799,7 +3817,7 @@ function Compensation({
             <div className="table-scroll compact-table">
               <table>
                 <thead>
-                  <tr><th style={{ width: 96 }}>이름</th><th style={{ width: 76 }}>직위</th><th style={{ width: 118 }}>부서</th><th className="num" style={{ width: 118 }}>계약연봉</th><th className="num" style={{ width: 118 }}>전년도</th><th style={{ width: 72 }}>상세</th></tr>
+                  <tr><th style={{ width: 96 }}>이름</th><th style={{ width: 76 }}>직위</th><th style={{ width: 118 }}>부서</th><th className="num" style={{ width: 112 }}>월급</th><th className="num" style={{ width: 118 }}>계약연봉</th><th className="num" style={{ width: 118 }}>전년도</th><th style={{ width: 72 }}>상세</th></tr>
                 </thead>
                 <tbody>
                   {people.map((person) => (
@@ -3807,6 +3825,7 @@ function Compensation({
                       <td>{person.name}</td>
                       <td>{person.rank}</td>
                       <td>{getDeptName(person.department_id)}</td>
+                      <td className="num">{formatWon(Math.round(Number(person.annual_salary || 0) / 12))}</td>
                       <td className="num">{formatWon(person.annual_salary)}</td>
                       <td className="num">{formatWon(person.previous_annual_salary)}</td>
                       <td><button className="btn small ghost" onClick={() => onOpenPerson(person)}>상세</button></td>
@@ -3818,27 +3837,27 @@ function Compensation({
           )}
         </div>
 
-        <div className="card mt">
-          <h2 className="card-title">상여금·성과보상 현황</h2>
-          <p className="card-sub">프로젝트 순수익과 지급률로 자동 계산된 상여금을 봅니다.</p>
+        <div className="card mt compact-bonus-card">
+          <div className="bonus-card-head">
+            <div>
+              <h2 className="card-title">상여금·성과보상</h2>
+              <p className="card-sub">프로젝트 순수익 기준 자동 계산</p>
+            </div>
+            <strong>{formatWon(bonusTotal)}</strong>
+          </div>
           {bonuses.length === 0 ? (
             <EmptyState text="등록된 상여금이 없습니다. ‘상여금 추가’로 등록하세요." />
           ) : (
-            <div className="metric-list">
-              {bonuses.map((bonus) => (
-                <Metric
-                  key={bonus.id}
-                  title={people.find((person) => person.id === bonus.person_id)?.name || "지급 대상 미정"}
-                  copy={`${projects.find((project) => project.id === bonus.project_id)?.name || "프로젝트 미정"} · ${bonus.period_label || ""}`}
-                  value={formatWon(bonus.bonus_amount)}
-                />
+            <div className="bonus-compact-list">
+              {bonuses.slice(0, 5).map((bonus) => (
+                <button type="button" className="bonus-compact-row" key={bonus.id}>
+                  <span>
+                    <strong>{people.find((person) => person.id === bonus.person_id)?.name || "지급 대상 미정"}</strong>
+                    <em>{projects.find((project) => project.id === bonus.project_id)?.name || "프로젝트 미정"} · {bonus.period_label || "기간 미정"}</em>
+                  </span>
+                  <b>{formatWon(bonus.bonus_amount)}</b>
+                </button>
               ))}
-            </div>
-          )}
-          {bonuses.length > 0 && (
-            <div className="point-card">
-              <div><div className="point-title">상여금 합계</div><div className="point-copy">검토 전·승인 포함</div></div>
-              <div className="point-value">{formatWon(bonusTotal)}</div>
             </div>
           )}
         </div>
@@ -3848,10 +3867,10 @@ function Compensation({
         <h2 className="card-title">근태 운영설정 참고</h2>
         <p className="card-sub">근태관리 운영설정의 기준값을 인건비 계산에서도 같은 기준으로 봅니다.</p>
         <div className="settings-reference-grid">
-          <Metric title="기본 출근 스케줄" copy="직원별 주 근무일·출퇴근 시간 기준" value="주 5일 · 09:00-18:00" />
-          <Metric title="미출근 기간" copy="무급/유급 여부가 급여 계산에 반영" value="급여 차감 확인" />
-          <Metric title="주간 스케줄 변경" copy="특정 주만 다른 요일·시간 적용" value="주 단위 예외" />
-          <Metric title="급여 계산 기준" copy="월 소정근로시간 기반 시급·월급 산정" value="월 174h 기준" />
+          <div className="settings-reference-item"><strong>기본 출근 스케줄</strong><b>주 5일 · 09:00-18:00</b><span>직원별 주 근무일과 출퇴근 시간 기준</span></div>
+          <div className="settings-reference-item"><strong>미출근 기간</strong><b>급여 차감 확인</b><span>무급/유급 여부를 급여 계산에 반영</span></div>
+          <div className="settings-reference-item"><strong>주간 스케줄 변경</strong><b>주 단위 예외</b><span>특정 주만 다른 요일과 시간 적용</span></div>
+          <div className="settings-reference-item"><strong>급여 계산 기준</strong><b>월 174h 기준</b><span>월 소정근로시간 기반 시급·월급 산정</span></div>
         </div>
       </div>
     </section>
@@ -5138,7 +5157,7 @@ function ExpenseForm({
     {
       key: "paid_at",
       title: "통장에서 실제로 돈이 빠진 날은 언제인가요?",
-      hint: "지출일은 물건을 산 날, 실제 지급일은 통장 물통에서 돈이 빠진 날입니다. 아직 지급 전이면 예정일을 적어 두세요.",
+      hint: "지출일은 물건을 산 날, 실제 지급일은 통장에서 돈이 빠진 날입니다. 아직 지급 전이면 예정일을 적어 두세요.",
       body: <input type="date" value={answers.paid_at || answers.used_at || today()} onChange={(e) => setField("paid_at", e.target.value)} />
     },
     {

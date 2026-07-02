@@ -3718,3 +3718,295 @@ input:focus, select:focus, textarea:focus {
     max-width: 100%;
   }
 }
+
+/* v7: finance dashboard spacing and dense Notion-like reading surfaces */
+.section-toolbar {
+  gap: 10px;
+}
+
+.expense-summary {
+  gap: 12px;
+}
+
+.expense-summary .kpi-card {
+  min-height: 112px;
+  padding: 16px 18px;
+}
+
+.expense-summary .kpi-value {
+  font-size: clamp(19px, 8.6cqw, 30px);
+  letter-spacing: 0;
+}
+
+.expense-detail-panel {
+  margin: 0 0 18px;
+  padding: 20px;
+}
+
+.recurring-toggle-summary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 14px;
+  padding: 13px 14px;
+  border-radius: 16px;
+  background: linear-gradient(135deg, rgba(238, 245, 255, 0.94), rgba(255, 255, 255, 0.92));
+  border: 1px solid rgba(49, 130, 246, 0.16);
+}
+
+.recurring-toggle-summary strong,
+.recurring-toggle-summary span {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.recurring-toggle-summary strong {
+  color: var(--ink);
+  font-size: 15px;
+  font-weight: 820;
+}
+
+.recurring-toggle-summary span {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.compensation-actions {
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.compensation-actions .quick-card {
+  display: grid;
+  align-content: center;
+  min-height: 98px;
+  padding: 16px 18px;
+  border-radius: 18px;
+}
+
+.compensation-actions .quick-card span {
+  min-height: 0;
+}
+
+.compensation-highlights {
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.compensation-highlights .point-card {
+  min-height: 112px;
+  padding: 18px 20px;
+  border-radius: 20px;
+}
+
+.compensation-highlights .point-value {
+  font-size: clamp(24px, 6.2cqw, 38px);
+  letter-spacing: 0;
+}
+
+.compensation-layout {
+  gap: 16px;
+  margin-top: 14px;
+}
+
+.compact-bonus-card {
+  padding: 18px;
+}
+
+.bonus-card-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: start;
+  margin-bottom: 12px;
+}
+
+.bonus-card-head .card-sub {
+  margin-bottom: 0;
+}
+
+.bonus-card-head > strong {
+  color: #3e6ebd;
+  font-size: clamp(18px, 6.8cqw, 28px);
+  font-weight: 820;
+  white-space: nowrap;
+}
+
+.bonus-compact-list {
+  display: grid;
+  gap: 8px;
+}
+
+.bonus-compact-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  padding: 11px 12px;
+  border: 1px solid rgba(16, 24, 40, 0.06);
+  border-radius: 14px;
+  background: rgba(248, 250, 252, 0.88);
+  color: var(--ink);
+  text-align: left;
+}
+
+.bonus-compact-row span,
+.bonus-compact-row strong,
+.bonus-compact-row em {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bonus-compact-row strong {
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.bonus-compact-row em {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 12px;
+  font-style: normal;
+  font-weight: 650;
+}
+
+.bonus-compact-row b {
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 820;
+  white-space: nowrap;
+}
+
+.settings-reference-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.settings-reference-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 8px;
+  min-height: 106px;
+  padding: 16px;
+  border: 1px solid rgba(16, 24, 40, 0.07);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.86);
+}
+
+.settings-reference-item strong,
+.settings-reference-item b,
+.settings-reference-item span {
+  display: block;
+  min-width: 0;
+  word-break: keep-all;
+  overflow-wrap: normal;
+}
+
+.settings-reference-item strong {
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 820;
+  line-height: 1.35;
+}
+
+.settings-reference-item b {
+  color: #245fbe;
+  font-size: 17px;
+  font-weight: 840;
+  line-height: 1.25;
+  white-space: nowrap;
+}
+
+.settings-reference-item span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1.55;
+}
+
+.finance-two-column {
+  margin-top: 18px;
+}
+
+.finance-band,
+.finance-plan-form {
+  border-radius: 0;
+  padding: 24px;
+}
+
+.finance-band-head {
+  margin-bottom: 16px;
+}
+
+.finance-note p {
+  max-width: 58ch;
+}
+
+.revenue-table-card {
+  padding: 20px;
+}
+
+.revenue-table-card .card-sub {
+  margin-bottom: 14px;
+}
+
+.revenue-table-card table {
+  min-width: 1240px;
+  border-collapse: separate;
+  border-spacing: 0;
+}
+
+.revenue-table-card th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: rgba(255, 255, 255, 0.98);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.revenue-table-card td {
+  padding-top: 13px;
+  padding-bottom: 13px;
+  vertical-align: middle;
+}
+
+.revenue-table-card tbody tr:hover {
+  background: rgba(238, 245, 255, 0.65);
+}
+
+.revenue-table-card .project-name-cell {
+  max-width: 260px;
+  line-height: 1.42;
+}
+
+@media (max-width: 1100px) {
+  .settings-reference-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 760px) {
+  .recurring-toggle-summary,
+  .bonus-card-head,
+  .bonus-compact-row {
+    grid-template-columns: 1fr;
+  }
+
+  .settings-reference-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .settings-reference-item b {
+    white-space: normal;
+  }
+}

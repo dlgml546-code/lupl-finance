@@ -289,7 +289,7 @@ export default function FinancePlanning({
 
         <div className="finance-band">
           <div className="finance-band-head">
-            <div><h2>통장 물통</h2><p>손익이 좋아도 입금이 늦으면 물통인 통장은 비어 있을 수 있습니다.</p></div>
+            <div><h2>월말 현금 흐름</h2><p>입금과 출금 시점을 반영해 예상 월말 현금을 봅니다.</p></div>
           </div>
           <div className="cash-equation">
             <span>월초 현금<strong>{money(plan.openingCash)}</strong></span>
@@ -301,14 +301,14 @@ export default function FinancePlanning({
             <span className={actualEndingCash >= 0 ? "positive" : "negative"}>예상 월말<strong>{money(actualEndingCash)}</strong></span>
           </div>
           <div className="finance-note">
-            <strong>외상장부</strong>
+            <strong>미수·미지급</strong>
             <span>아직 받을 돈 {money(actual.receivable)} · 아직 줄 돈 {money(actual.payable)}</span>
-            <p>외상값은 장사가 끝나도 통장에 아직 들어오지 않았거나, 비용은 생겼지만 아직 송금하지 않은 돈입니다.</p>
+            <p>일은 끝났지만 아직 입금되지 않았거나, 비용은 생겼지만 아직 송금하지 않은 돈입니다.</p>
           </div>
           <div className="finance-note compact">
             <strong>계획 월말 현금</strong>
             <span>{money(plannedEndingCash)}</span>
-            <p>월초 현금 + 계획 입금 − 계획 출금 − 장비 구입비로 계산합니다.</p>
+            <p>월초 현금 + 계획 입금 − 계획 출금 − 장비 구입비 기준입니다.</p>
           </div>
         </div>
       </div>
@@ -320,13 +320,13 @@ export default function FinancePlanning({
         </div>
         <input type="hidden" name="period_month" value={monthDate(selectedMonth)} />
         <div className="finance-form-grid">
-          <label>월초 현금<span>달이 시작할 때 물통에 있던 돈</span><input name="opening_cash" type="number" value={draft.opening_cash || ""} onChange={(event) => setField("opening_cash", event.target.value)} /></label>
+          <label>월초 현금<span>달이 시작할 때 보유한 현금</span><input name="opening_cash" type="number" value={draft.opening_cash || ""} onChange={(event) => setField("opening_cash", event.target.value)} /></label>
           <label>계획 매출<span>이번 달에 건네기로 한 빵값</span><input name="planned_revenue" type="number" value={draft.planned_revenue || ""} onChange={(event) => setField("planned_revenue", event.target.value)} /></label>
           <label>계획 변동비<span>매출이 늘면 같이 늘어나는 재료비</span><input name="planned_variable_cost" type="number" value={draft.planned_variable_cost || ""} onChange={(event) => setField("planned_variable_cost", event.target.value)} /></label>
           <label>계획 고정비<span>월급·월세·구독료처럼 매달 나가는 돈</span><input name="planned_fixed_cost" type="number" value={draft.planned_fixed_cost || ""} onChange={(event) => setField("planned_fixed_cost", event.target.value)} /></label>
           <label>장비·자산 구입<span>컴퓨터처럼 오래 쓰는 큰 도구 구입비</span><input name="planned_capex" type="number" value={draft.planned_capex || ""} onChange={(event) => setField("planned_capex", event.target.value)} /></label>
-          <label>통장 입금 예정<span>이번 달 물통으로 실제 들어올 돈</span><input name="planned_receivable" type="number" value={draft.planned_receivable || ""} onChange={(event) => setField("planned_receivable", event.target.value)} /></label>
-          <label>통장 출금 예정<span>이번 달 물통에서 실제 빠질 돈</span><input name="planned_payable" type="number" value={draft.planned_payable || ""} onChange={(event) => setField("planned_payable", event.target.value)} /></label>
+          <label>통장 입금 예정<span>이번 달 실제 들어올 돈</span><input name="planned_receivable" type="number" value={draft.planned_receivable || ""} onChange={(event) => setField("planned_receivable", event.target.value)} /></label>
+          <label>통장 출금 예정<span>이번 달 실제 빠질 돈</span><input name="planned_payable" type="number" value={draft.planned_payable || ""} onChange={(event) => setField("planned_payable", event.target.value)} /></label>
           <label>판매 수량<span>몇 개·몇 회·몇 명에게 팔 계획인지</span><input name="sales_quantity" type="number" value={draft.sales_quantity || ""} onChange={(event) => setField("sales_quantity", event.target.value)} /></label>
           <label>평균 단가<span>한 개·한 회당 평균 가격</span><input name="average_unit_price" type="number" value={draft.average_unit_price || ""} onChange={(event) => setField("average_unit_price", event.target.value)} /></label>
           <label className="wide">계획 메모<span>왜 이 숫자로 잡았는지 근거를 적어 두세요.</span><textarea name="note" value={draft.note || ""} onChange={(event) => setField("note", event.target.value)} /></label>
