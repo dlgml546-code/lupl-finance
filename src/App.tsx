@@ -1919,7 +1919,8 @@ export default function App() {
 
       const saved = result.data as Person;
 
-      if (!personId) {
+      const needsAuthUser = !saved.auth_user_id;
+      if (needsAuthUser) {
         const initialPassword = makeInitialPassword(phone);
         if (!initialPassword) throw new Error("휴대전화 뒷번호 4자리를 확인할 수 없습니다.");
         const { error: inviteError } = await supabase.functions.invoke("admin-create-user", {
@@ -1932,9 +1933,10 @@ export default function App() {
           }
         });
         if (inviteError) {
-          showToast("직원 정보는 저장됐지만 Auth 계정 생성은 Edge Function 배포 후 다시 진행해야 합니다.", "warn");
+          const detail = inviteError.message ? ` (${inviteError.message})` : "";
+          showToast(`직원 정보는 저장됐지만 로그인 계정 생성에 실패했습니다. Supabase Edge Function(admin-create-user) 배포/권한을 확인하세요.${detail}`, "warn");
         } else {
-          showToast(`직원 등록 완료. 초기 비밀번호는 lupl+휴대전화 뒷번호 4자리입니다.`, "ok");
+          showToast(`${personId ? "직원 정보와 로그인 계정 저장 완료" : "직원 등록 완료"}. 초기 비밀번호는 lupl+휴대전화 뒷번호 4자리입니다.`, "ok");
         }
       } else {
         showToast("직원 정보를 저장했습니다.");
