@@ -899,6 +899,20 @@ function normalizeEmployeeNumber(value: string) {
   return value.replace(/[^0-9]/g, "");
 }
 
+function makeEmployeeNumberFromHireDate(hireDate: string, people: Person[], excludePersonId?: string | null) {
+  const digits = String(hireDate || "").replace(/[^0-9]/g, "");
+  if (digits.length < 8) return "";
+  const prefix = digits.slice(2, 8);
+  const maxSequence = people.reduce((max, person) => {
+    if (excludePersonId && person.id === excludePersonId) return max;
+    const number = normalizeEmployeeNumber(person.employee_number || "");
+    if (!number.startsWith(prefix) || number.length !== 8) return max;
+    const sequence = Number(number.slice(6, 8)) || 0;
+    return Math.max(max, sequence);
+  }, 0);
+  return `${prefix}${String(maxSequence + 1).padStart(2, "0")}`;
+}
+
 function makeInternalEmail(employeeNumber: string) {
   return `${normalizeEmployeeNumber(employeeNumber).toLowerCase()}@employee.lupl.kr`;
 }
@@ -1791,7 +1805,9 @@ export default function App() {
     try {
       const personId = String(formData.get("person_id") || "") || null;
       const rawEmployeeNumber = String(formData.get("employee_number") || "");
-      const employeeNumber = rawEmployeeNumber ? normalizeEmployeeNumber(rawEmployeeNumber) : null;
+      const hireDate = String(formData.get("hire_date") || "") || null;
+      const autoEmployeeNumber = hireDate ? makeEmployeeNumberFromHireDate(hireDate, people, personId) : "";
+      const employeeNumber = rawEmployeeNumber ? normalizeEmployeeNumber(rawEmployeeNumber) : autoEmployeeNumber || null;
       if (rawEmployeeNumber && employeeNumber !== rawEmployeeNumber.replace(/\s/g, "")) throw new Error("사번은 숫자만 입력하세요.");
       const phone = String(formData.get("phone") || "") || null;
       const emailInput = String(formData.get("email") || "").trim() || null;
@@ -1799,7 +1815,7 @@ export default function App() {
       const newPassword = String(formData.get("new_password") || "");
       const isEditingSelf = Boolean(personId && currentPerson?.id === personId);
 
-      if (!personId && !employeeNumber) throw new Error("직원 등록 시 사번은 필수입니다.");
+      if (!personId && !employeeNumber) throw new Error("입사일을 입력하면 사번이 자동 생성됩니다. 입사일을 먼저 입력하세요.");
       if (!personId && !phone) throw new Error("초기 비밀번호 생성을 위해 휴대전화 번호가 필요합니다.");
       if (!email) throw new Error("이메일 또는 사번이 필요합니다.");
 
@@ -1810,7 +1826,7 @@ export default function App() {
         phone,
         rank: String(formData.get("rank") || "매니저") as Rank,
         department_id: String(formData.get("department_id") || "") || null,
-        hire_date: String(formData.get("hire_date") || "") || null,
+        hire_date: hireDate,
         annual_salary: parseNumber(formData.get("annual_salary")),
         previous_annual_salary: parseNumber(formData.get("previous_annual_salary")),
         weekly_work_days: parseNumber(formData.get("weekly_work_days")) || 5,
@@ -4579,12 +4595,11 @@ function Modal({
           >
             <input type="hidden" name="person_id" value={selectedPerson?.id || ""} />
             <label>이름<input name="name" required defaultValue={selectedPerson?.name || ""} placeholder="홍길동" /></label>
-            <label>사번<input name="employee_number" inputMode="numeric" pattern="[0-9]*" required={!selectedPerson} defaultValue={selectedPerson?.employee_number || ""} placeholder="20220612001" /></label>
+            <EmployeeNumberFields person={selectedPerson} people={people} />
             <label>이메일<span className="field-hint">관리자는 이메일·사번 모두 사용 가능</span><input name="email" type="email" defaultValue={selectedPerson?.email || ""} placeholder="member@lupl.kr" /></label>
             <label>휴대전화<input name="phone" defaultValue={formatPhoneNumber(selectedPerson?.phone || "")} onInput={handlePhoneInput} placeholder="010-0000-1234" /></label>
             <label>직위<select name="rank" defaultValue={selectedPerson?.rank || "매니저"}>{ranks.map((rank) => <option key={rank}>{rank}</option>)}</select></label>
             <label>부서<select name="department_id" defaultValue={selectedPerson?.department_id || ""}><option value="">선택 안 함</option>{departments.map((d) => <option value={d.id} key={d.id}>{d.name}</option>)}</select></label>
-            <label>입사일<input type="date" name="hire_date" defaultValue={selectedPerson?.hire_date || ""} /></label>
             <SalaryFields person={selectedPerson} />
             {selectedPerson?.id === currentPerson.id && (
               <label className="wide">새 비밀번호<span className="field-hint">입력한 경우에만 변경됩니다. 비밀번호는 평문으로 저장하지 않습니다.</span><input name="new_password" type="password" minLength={6} placeholder="새 비밀번호" /></label>
@@ -5900,6 +5915,43 @@ function ProjectCategoryFields({ defaults }: { defaults?: { major?: string | nul
         <select name="project_small_category" value={small} onChange={(e) => setSmall(e.target.value)}>
           {smalls.map((item) => <option key={item}>{item}</option>)}
         </select>
+      </label>
+    </>
+  );
+}
+
+function EmployeeNumberFields({ person, people }: { person: Person | null; people: Person[] }) {
+  const employeeNumberRef = useRef<HTMLInputElement>(null);
+  const [hireDate, setHireDate] = useState(person?.hire_date || "");
+  const generatedNumber = hireDate ? makeEmployeeNumberFromHireDate(hireDate, people, person?.id) : "";
+
+  useEffect(() => {
+    if (person || !generatedNumber || !employeeNumberRef.current) return;
+    employeeNumberRef.current.value = generatedNumber;
+  }, [generatedNumber, person]);
+
+  function handleHireDateChange(event: React.ChangeEvent<HTMLInputElement>) {
+    const nextHireDate = event.currentTarget.value;
+    setHireDate(nextHireDate);
+    if (!person && employeeNumberRef.current) {
+      employeeNumberRef.current.value = makeEmployeeNumberFromHireDate(nextHireDate, people);
+    }
+  }
+
+  function handleEmployeeNumberInput(event: React.FormEvent<HTMLInputElement>) {
+    const input = event.currentTarget;
+    input.value = normalizeEmployeeNumber(input.value);
+  }
+
+  return (
+    <>
+      <label>입사일
+        <span className="field-hint">입사일을 넣으면 사번이 YYMMDD+순번으로 자동 생성됩니다.</span>
+        <input type="date" name="hire_date" required={!person} value={hireDate} onChange={handleHireDateChange} />
+      </label>
+      <label>사번
+        <span className="field-hint">{person ? "기존 사번을 수정할 수 있습니다." : generatedNumber ? `자동 생성: ${generatedNumber}` : "예: 2026-06-25 입사 → 26062501"}</span>
+        <input ref={employeeNumberRef} name="employee_number" inputMode="numeric" pattern="[0-9]*" defaultValue={person?.employee_number || ""} onInput={handleEmployeeNumberInput} placeholder="입사일 선택 시 자동 생성" />
       </label>
     </>
   );
