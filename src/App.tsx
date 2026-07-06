@@ -1956,6 +1956,7 @@ export default function App() {
       const contactEmail = String(formData.get("contact_email") || "").trim() || null;
       const loginEmail = (personId ? selectedPerson?.email || null : null) || (employeeNumber ? makeInternalEmail(employeeNumber) : null);
       const newPassword = String(formData.get("new_password") || "");
+      const resetLogin = String(formData.get("reset_login") || "") === "on";
       const isEditingSelf = Boolean(personId && currentPerson?.id === personId);
 
       if (!personId && !employeeNumber) throw new Error("입사일을 입력하면 사번이 자동 생성됩니다. 입사일을 먼저 입력하세요.");
@@ -2010,8 +2011,8 @@ export default function App() {
 
       const saved = result.data as Person;
 
-      const needsAuthUser = !saved.auth_user_id;
-      if (needsAuthUser) {
+      const shouldSyncAuthUser = !personId || !saved.auth_user_id || resetLogin;
+      if (shouldSyncAuthUser) {
         const initialPassword = makeInitialPassword(phone);
         if (!initialPassword) throw new Error("휴대전화 뒷번호 4자리를 확인할 수 없습니다.");
         const { error: inviteError } = await supabase.functions.invoke("admin-create-user", {
@@ -2027,6 +2028,7 @@ export default function App() {
           const detail = inviteError.message ? ` (${inviteError.message})` : "";
           showToast(`직원 정보는 저장됐지만 로그인 계정 생성에 실패했습니다. Supabase Edge Function(admin-create-user) 배포/권한을 확인하세요.${detail}`, "warn");
         } else {
+          if (resetLogin) await supabase.from("people").update({ password_changed_at: null }).eq("id", saved.id);
           showToast(`${personId ? "직원 정보와 로그인 계정 저장 완료" : "직원 등록 완료"}. 초기 비밀번호는 lupl+휴대전화 뒷번호 4자리입니다.`, "ok");
         }
       } else {
@@ -3021,7 +3023,6 @@ export default function App() {
 }
 
 function AuthScreen() {
-  const [mode, setMode] = useState<"login" | "signup">("login");
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
 
@@ -3045,22 +3046,15 @@ function AuthScreen() {
       const identifier = String(formData.get("identifier") || "");
       const password = String(formData.get("password") || "");
 
-      if (mode === "login") {
-        const email = await resolveLoginEmail(identifier);
-        const result = await supabase.auth.signInWithPassword({ email, password });
-        if (result.error) {
-          if (!identifier.includes("@")) {
-            throw new Error("사번 로그인 계정이 아직 생성되지 않았거나 초기 비밀번호가 다릅니다. 관리자에게 직원 정보 수정 화면에서 다시 저장해 달라고 요청하세요.");
-          }
-          throw result.error;
+      const email = await resolveLoginEmail(identifier);
+      const result = await supabase.auth.signInWithPassword({ email, password });
+      if (result.error) {
+        if (!identifier.includes("@")) {
+          throw new Error("사번 로그인 계정이 아직 생성되지 않았거나 초기 비밀번호가 다릅니다. 관리자에게 직원 정보 수정 화면에서 로그인 계정 재설정을 체크하고 저장해 달라고 요청하세요.");
         }
-        setMessage("로그인했습니다.");
-      } else {
-        if (!identifier.includes("@")) throw new Error("초기 관리자 가입은 이메일로 진행하세요. 직원은 관리자가 사번으로 등록합니다.");
-        const result = await supabase.auth.signUp({ email: identifier, password });
-        if (result.error) throw result.error;
-        setMessage("가입했습니다. 메일 확인 설정이 켜져 있으면 이메일 인증 후 로그인하세요.");
+        throw result.error;
       }
+      setMessage("로그인했습니다.");
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "로그인에 실패했습니다.");
     } finally {
@@ -3080,13 +3074,10 @@ function AuthScreen() {
             void handleAuth(new FormData(event.currentTarget));
           }}
         >
-          <label>{mode === "login" ? "사번 또는 이메일" : "관리자 이메일"}<input name="identifier" required placeholder={mode === "login" ? "LUPL-001 또는 lee@lupl.kr" : "lee@lupl.kr"} /></label>
+          <label>사번 또는 이메일<input name="identifier" required placeholder="26062501 또는 lee@lupl.kr" /></label>
           <label>비밀번호<input name="password" type="password" required minLength={6} placeholder="초기 비밀번호 또는 변경한 비밀번호" /></label>
-          <button className="btn blue" type="submit" disabled={busy}>{mode === "login" ? "로그인" : "관리자 초기 가입"}</button>
+          <button className="btn blue" type="submit" disabled={busy}>로그인</button>
         </form>
-        <button className="link-btn" onClick={() => setMode(mode === "login" ? "signup" : "login")}>
-          {mode === "login" ? "첫 관리자 계정 만들기" : "이미 계정이 있으면 로그인"}
-        </button>
         {message && <div className="auth-message">{message}</div>}
       </div>
     </div>
@@ -4824,6 +4815,9 @@ function Modal({
             <label>직위<select name="rank" defaultValue={selectedPerson?.rank || "매니저"}>{ranks.map((rank) => <option key={rank}>{rank}</option>)}</select></label>
             <label>부서<select name="department_id" defaultValue={selectedPerson?.department_id || ""}><option value="">선택 안 함</option>{departments.map((d) => <option value={d.id} key={d.id}>{formatDepartmentName(d.name)}</option>)}</select></label>
             <SalaryFields person={selectedPerson} />
+            {selectedPerson && (
+              <label className="check-label wide"><input type="checkbox" name="reset_login" /><span>로그인 계정 생성/초기 비밀번호 재설정</span></label>
+            )}
             {selectedPerson?.id === currentPerson.id && (
               <label className="wide">새 비밀번호<span className="field-hint">입력한 경우에만 변경됩니다. 비밀번호는 평문으로 저장하지 않습니다.</span><input name="new_password" type="password" minLength={6} placeholder="새 비밀번호" /></label>
             )}

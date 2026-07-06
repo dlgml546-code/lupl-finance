@@ -49,6 +49,17 @@ Deno.serve(async (req) => {
     }
 
     if (authUserId) {
+      const { error: resetError } = await admin.auth.admin.updateUserById(authUserId, {
+        email,
+        password,
+        email_confirm: true,
+        user_metadata: {
+          name,
+          employee_number: employeeNumber
+        }
+      });
+      if (resetError) return json({ error: resetError.message }, 500);
+
       const { error: updateError } = await admin
         .from("people")
         .update({ auth_user_id: authUserId })
