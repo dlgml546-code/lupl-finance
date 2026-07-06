@@ -37,12 +37,21 @@ async function assertManager(admin, req) {
   const { data: userData, error: userError } = await admin.auth.getUser(token);
   if (userError || !userData.user) throw Object.assign(new Error("로그인 세션을 확인하지 못했습니다."), { status: 401 });
 
-  const { data: profile, error: profileError } = await admin
+  let { data: profile, error: profileError } = await admin
     .from("people")
     .select("rank")
     .eq("auth_user_id", userData.user.id)
     .maybeSingle();
   if (profileError) throw profileError;
+  if (!profile && userData.user.email) {
+    const byEmail = await admin
+      .from("people")
+      .select("rank")
+      .eq("email", userData.user.email)
+      .maybeSingle();
+    if (byEmail.error) throw byEmail.error;
+    profile = byEmail.data;
+  }
   if (!profile || !["대표", "본부장"].includes(profile.rank)) {
     throw Object.assign(new Error("대표 또는 본부장만 직원 로그인 계정을 초기화할 수 있습니다."), { status: 403 });
   }

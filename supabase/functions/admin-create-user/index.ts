@@ -32,12 +32,21 @@ Deno.serve(async (req) => {
     const { data: callerData, error: callerError } = await admin.auth.getUser(token);
     if (callerError || !callerData.user) return json({ error: "로그인 세션을 확인하지 못했습니다." }, 401);
 
-    const { data: callerProfile, error: profileError } = await admin
+    let { data: callerProfile, error: profileError } = await admin
       .from("people")
       .select("rank")
       .eq("auth_user_id", callerData.user.id)
       .maybeSingle();
     if (profileError) return json({ error: profileError.message }, 500);
+    if (!callerProfile && callerData.user.email) {
+      const byEmail = await admin
+        .from("people")
+        .select("rank")
+        .eq("email", callerData.user.email)
+        .maybeSingle();
+      if (byEmail.error) return json({ error: byEmail.error.message }, 500);
+      callerProfile = byEmail.data;
+    }
     if (!callerProfile || !["대표", "본부장"].includes(callerProfile.rank)) {
       return json({ error: "대표 또는 본부장만 직원 로그인 계정을 초기화할 수 있습니다." }, 403);
     }
@@ -78,7 +87,7 @@ Deno.serve(async (req) => {
 
       const { error: updateError } = await admin
         .from("people")
-        .update({ auth_user_id: authUserId })
+        .update({ auth_user_id: authUserId, password_changed_at: null })
         .eq("id", personId);
       if (updateError) return json({ error: updateError.message }, 500);
     }
