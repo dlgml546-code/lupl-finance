@@ -25,6 +25,22 @@ Deno.serve(async (req) => {
     if (!supabaseUrl || !serviceRoleKey) return json({ error: "Missing Supabase service role settings" }, 500);
 
     const admin = createClient(supabaseUrl, serviceRoleKey);
+    const authHeader = req.headers.get("Authorization") || "";
+    const token = authHeader.replace(/^Bearer\s+/i, "").trim();
+    if (!token) return json({ error: "관리자 로그인이 필요합니다." }, 401);
+
+    const { data: callerData, error: callerError } = await admin.auth.getUser(token);
+    if (callerError || !callerData.user) return json({ error: "로그인 세션을 확인하지 못했습니다." }, 401);
+
+    const { data: callerProfile, error: profileError } = await admin
+      .from("people")
+      .select("rank")
+      .eq("auth_user_id", callerData.user.id)
+      .maybeSingle();
+    if (profileError) return json({ error: profileError.message }, 500);
+    if (!callerProfile || !["대표", "본부장"].includes(callerProfile.rank)) {
+      return json({ error: "대표 또는 본부장만 직원 로그인 계정을 초기화할 수 있습니다." }, 403);
+    }
 
     const { data: created, error: createError } = await admin.auth.admin.createUser({
       email,
@@ -67,7 +83,7 @@ Deno.serve(async (req) => {
       if (updateError) return json({ error: updateError.message }, 500);
     }
 
-    return json({ ok: true, auth_user_id: authUserId });
+    return json({ ok: true, auth_user_id: authUserId, password_reset: true, source: "supabase-edge" });
   } catch (error) {
     return json({ error: error instanceof Error ? error.message : String(error) }, 500);
   }

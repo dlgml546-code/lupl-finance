@@ -2015,21 +2015,19 @@ export default function App() {
       if (shouldSyncAuthUser) {
         const initialPassword = makeInitialPassword(phone);
         if (!initialPassword) throw new Error("휴대전화 뒷번호 4자리를 확인할 수 없습니다.");
-        const { error: inviteError } = await supabase.functions.invoke("admin-create-user", {
-          body: {
-            personId: saved.id,
-            email: loginEmail,
-            password: initialPassword,
-            name: payload.name,
-            employeeNumber
-          }
-        });
-        if (inviteError) {
-          const detail = inviteError.message ? ` (${inviteError.message})` : "";
-          showToast(`직원 정보는 저장됐지만 로그인 계정 생성에 실패했습니다. Supabase Edge Function(admin-create-user) 배포/권한을 확인하세요.${detail}`, "warn");
+        const syncResult = await syncEmployeeLoginAccount({
+          personId: saved.id,
+          email: loginEmail,
+          password: initialPassword,
+          name: payload.name,
+          employeeNumber
+        }, resetLogin);
+        if (!syncResult.ok) {
+          showToast(`직원 정보는 저장됐지만 로그인 계정 초기화에 실패했습니다. ${syncResult.message}`, "warn");
         } else {
           if (resetLogin) await supabase.from("people").update({ password_changed_at: null }).eq("id", saved.id);
           showToast(`${personId ? "직원 정보와 로그인 계정 저장 완료" : "직원 등록 완료"}. 초기 비밀번호는 lupl+휴대전화 뒷번호 4자리입니다.`, "ok");
+          console.info("employee auth synced", syncResult.source);
         }
       } else {
         showToast("직원 정보를 저장했습니다.");
@@ -2271,6 +2269,55 @@ export default function App() {
       showToast(error instanceof Error ? error.message : "맨먼스 저장 실패", "err");
       throw error;
     }
+  }
+
+  async function syncEmployeeLoginAccount(
+    payload: { personId: string; email: string; password: string; name: string; employeeNumber: string | null },
+    requirePasswordReset: boolean
+  ) {
+    const body = { ...payload, forceReset: requirePasswordReset };
+    const failures: string[] = [];
+    const { data: sessionData } = await supabase.auth.getSession();
+    const accessToken = sessionData.session?.access_token || "";
+
+    try {
+      const response = await fetch("/api/admin-create-user", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {})
+        },
+        body: JSON.stringify(body)
+      });
+      const raw = await response.text();
+      let parsed: { ok?: boolean; error?: string; password_reset?: boolean; source?: string } = {};
+      try {
+        parsed = raw ? JSON.parse(raw) : {};
+      } catch {
+        parsed = { error: raw.slice(0, 160) };
+      }
+      if (response.ok && parsed.ok && (!requirePasswordReset || parsed.password_reset)) {
+        return { ok: true, source: parsed.source || "vercel-api" };
+      }
+      failures.push(`Vercel API: ${parsed.error || response.statusText}`);
+    } catch (error) {
+      failures.push(`Vercel API: ${error instanceof Error ? error.message : String(error)}`);
+    }
+
+    const { data, error } = await supabase.functions.invoke("admin-create-user", { body });
+    const edgeData = data as { ok?: boolean; error?: string; password_reset?: boolean; source?: string } | null;
+    if (!error && edgeData?.ok && (!requirePasswordReset || edgeData.password_reset)) {
+      return { ok: true, source: edgeData.source || "supabase-edge" };
+    }
+    if (error) {
+      failures.push(`Supabase Edge Function: ${error.message}`);
+    } else if (edgeData?.ok && requirePasswordReset && !edgeData.password_reset) {
+      failures.push("Supabase Edge Function이 구버전이라 기존 계정 비밀번호 재설정이 확인되지 않았습니다.");
+    } else if (edgeData?.error) {
+      failures.push(`Supabase Edge Function: ${edgeData.error}`);
+    }
+
+    return { ok: false, message: failures.filter(Boolean).join(" / ") || "로그인 계정 초기화에 실패했습니다." };
   }
 
   async function createPermission(formData: FormData) {
@@ -6487,7 +6534,7 @@ function DetailModal({
           <Info label="지원사업 연결" value={review?.grant_program_name || "미등록"} />
           <Info label="상여금 현황" value={`${personBonuses.length}건 · ${formatWon(personBonuses.reduce((s, b) => s + Number(b.bonus_amount || 0), 0))}`} />
           <Info label="투입 프로젝트" value={`${personLabor.length}건 · ${personLabor.reduce((s, l) => s + Number(l.man_months || 0), 0).toFixed(2)}MM`} />
-          <Info label="비밀번호 변경" value={selectedPerson.password_changed_at ? formatDateTime(selectedPerson.password_changed_at) : "초기 비밀번호 사용 가능"} />
+          <Info label="비밀번호 상태" value={selectedPerson.password_changed_at ? formatDateTime(selectedPerson.password_changed_at) : "앱상 초기값 상태 · 로그인 안 되면 재설정 저장"} />
         </div>
         <div className="modal-actions">
           <button className="btn blue" type="button" onClick={() => onEditPerson(selectedPerson)}>직원 정보 수정</button>
