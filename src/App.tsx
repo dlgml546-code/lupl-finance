@@ -211,6 +211,91 @@ const pageKeyMap: Record<SectionKey, string> = {
   org: "org"
 };
 
+const DESIGN_DEPARTMENT_NAME: Department["name"] = "디자인부";
+const KIM_SOHYUN_NAME = "김소현";
+const VIRTUAL_DESIGN_DEPARTMENT_ID = "virtual-design-department";
+
+const permissionAssignableMenu = menu.filter((item) => item.key !== "overview");
+
+function formatDepartmentName(name: string | null | undefined) {
+  const value = String(name || "");
+  return value.endsWith("부") ? `${value}서` : value;
+}
+
+function normalizePersonName(name: string | null | undefined) {
+  return String(name || "").replace(/\s/g, "");
+}
+
+function isKimSohyun(person: Person) {
+  return normalizePersonName(person.name) === KIM_SOHYUN_NAME;
+}
+
+function getOrgDepartments(departments: Department[]) {
+  if (departments.some((department) => department.name === DESIGN_DEPARTMENT_NAME)) return departments;
+  return [
+    ...departments,
+    {
+      id: VIRTUAL_DESIGN_DEPARTMENT_ID,
+      name: DESIGN_DEPARTMENT_NAME,
+      description: "브랜드 디자인, 시각 자료, UX/UI"
+    }
+  ];
+}
+
+function getDepartmentMembers(people: Person[], department: Department, hasDesignDepartment: boolean) {
+  return people.filter((person) => {
+    if (hasDesignDepartment && isKimSohyun(person)) return department.name === DESIGN_DEPARTMENT_NAME;
+    return person.department_id === department.id;
+  });
+}
+
+function isDashboardRegisteredPerson(person: Person) {
+  return Boolean(person.is_active && (person.employee_number || person.auth_user_id || isInternalEmployeeEmail(person.email)));
+}
+
+function getPermissionPeople(people: Person[]) {
+  return people.filter((person) => isDashboardRegisteredPerson(person) && !["대표", "본부장"].includes(person.rank));
+}
+
+function getMenuLabelByPageKey(pageKey: string) {
+  return menu.find((item) => pageKeyMap[item.key] === pageKey)?.label || pageKey;
+}
+
+async function ensureOrganizationDefaults(departmentsData: Department[], peopleData: Person[]) {
+  const departments = [...departmentsData];
+  const people = [...peopleData];
+  let designDepartment = departments.find((department) => department.name === DESIGN_DEPARTMENT_NAME) || null;
+
+  if (!designDepartment) {
+    const { data, error } = await supabase
+      .from("departments")
+      .upsert({ name: DESIGN_DEPARTMENT_NAME, description: "브랜드 디자인, 시각 자료, UX/UI" }, { onConflict: "name" })
+      .select()
+      .maybeSingle();
+    if (error) {
+      console.warn("디자인부서 자동 생성 실패", error);
+    } else if (data) {
+      designDepartment = data as Department;
+      departments.push(designDepartment);
+    }
+  }
+
+  if (designDepartment) {
+    const targetIndex = people.findIndex(isKimSohyun);
+    const target = targetIndex >= 0 ? people[targetIndex] : null;
+    if (target && target.department_id !== designDepartment.id) {
+      const { error } = await supabase.from("people").update({ department_id: designDepartment.id }).eq("id", target.id);
+      if (error) {
+        console.warn("김소현님 디자인부서 배정 실패", error);
+      } else {
+        people[targetIndex] = { ...target, department_id: designDepartment.id };
+      }
+    }
+  }
+
+  return { departments, people };
+}
+
 // 외주용역 기준 선택지
 const clientTypes: ClientType[] = ["일반학교", "특수학교", "공공기관", "기업", "비영리재단"];
 const projectGroups: ProjectGroup[] = ["교육", "문서작업", "홈페이지", "메타버스", "마케팅", "행사", "전시", "영상", "제품 제작", "디자인", "광고/홍보", "연구", "개발", "러플 마진 계산기", "기타"];
@@ -1140,8 +1225,14 @@ export default function App() {
       const firstError = responses.find((res) => res.error)?.error;
       if (firstError) throw firstError;
 
-      setDepartments((departmentsRes.data || []) as Department[]);
-      setPeople((peopleRes.data || []) as Person[]);
+      let departmentsData = (departmentsRes.data || []) as Department[];
+      let peopleData = (peopleRes.data || []) as Person[];
+      const orgDefaults = await ensureOrganizationDefaults(departmentsData, peopleData);
+      departmentsData = orgDefaults.departments;
+      peopleData = orgDefaults.people;
+
+      setDepartments(departmentsData);
+      setPeople(peopleData);
       setPermissions((permissionsRes.data || []) as PagePermission[]);
       setCards((cardsRes.data || []) as PaymentCard[]);
       setCategories((categoriesRes.data || []) as ExpenseCategoryItem[]);
@@ -2182,14 +2273,30 @@ export default function App() {
 
   async function createPermission(formData: FormData) {
     try {
-      const payload = {
-        person_id: String(formData.get("person_id") || ""),
-        page_key: String(formData.get("page_key") || "overview"),
-        permission: String(formData.get("permission") || "보기만 가능")
-      };
-      const { error } = await saveWithHealing("page_permissions", payload, { upsert: { onConflict: "person_id,page_key" } });
+      const personId = String(formData.get("person_id") || "");
+      const permission = String(formData.get("permission") || "보기만 가능") as PagePermission["permission"];
+      const mode = String(formData.get("permission_mode") || "exclude");
+      const assignablePageKeys = permissionAssignableMenu.map((item) => pageKeyMap[item.key]);
+      const selectedPageKeys = formData.getAll("page_keys").map(String).filter((key) => assignablePageKeys.includes(key));
+      const excludedPageKeys = new Set(formData.getAll("excluded_page_keys").map(String));
+      const targetPageKeys = mode === "include"
+        ? selectedPageKeys
+        : assignablePageKeys.filter((pageKey) => !excludedPageKeys.has(pageKey));
+
+      if (!personId) throw new Error("직원을 선택하세요.");
+      if (targetPageKeys.length === 0) throw new Error("허용할 페이지가 없습니다. 제외 항목을 줄이거나 직접 허용할 페이지를 선택하세요.");
+
+      const { error: deleteError } = await supabase.from("page_permissions").delete().eq("person_id", personId);
+      if (deleteError) throw toFriendlyDbError(deleteError, "기존 권한을 정리하지 못했습니다.");
+
+      const rows = targetPageKeys.map((pageKey) => ({
+        person_id: personId,
+        page_key: pageKey,
+        permission
+      }));
+      const { error } = await supabase.from("page_permissions").upsert(rows, { onConflict: "person_id,page_key" });
       if (error) throw toFriendlyDbError(error, "권한 저장에 실패했습니다.");
-      showToast("권한을 저장했습니다.");
+      showToast(`${targetPageKeys.length}개 페이지 권한을 저장했습니다.`);
       setModal(null);
       await loadAll();
     } catch (error) {
@@ -3989,7 +4096,7 @@ function Compensation({
 
   function getDeptName(deptId: string | null) {
     if (!deptId) return "-";
-    return departments.find((d) => d.id === deptId)?.name || "-";
+    return formatDepartmentName(departments.find((d) => d.id === deptId)?.name) || "-";
   }
 
   return (
@@ -4449,6 +4556,12 @@ function Org({
   onOpenPerson: (person: Person) => void;
 }) {
   const ranksOrder: Rank[] = ["책임", "선임", "매니저"];
+  const orgDepartments = getOrgDepartments(departments);
+  const hasDesignDepartment = orgDepartments.some((department) => department.name === DESIGN_DEPARTMENT_NAME);
+  const unassignedPeople = people.filter((p) => !isKimSohyun(p) && !p.department_id && !["대표", "본부장"].includes(p.rank));
+  const permissionPeople = getPermissionPeople(people);
+  const permissionPeopleIds = new Set(permissionPeople.map((person) => person.id));
+  const visiblePermissions = permissions.filter((permission) => permissionPeopleIds.has(permission.person_id));
 
   return (
     <section className="section active">
@@ -4496,11 +4609,11 @@ function Org({
 
           {/* 부서별 컬럼, 각 부서 안에 책임/선임/매니저 */}
           <div className="org-depts">
-            {departments.map((dept) => {
-              const deptPeople = people.filter((p) => p.department_id === dept.id);
+            {orgDepartments.map((dept) => {
+              const deptPeople = getDepartmentMembers(people, dept, hasDesignDepartment);
               return (
                 <div className="org-dept-col" key={dept.id}>
-                  <div className="org-dept-head">{dept.name}</div>
+                  <div className="org-dept-head">{formatDepartmentName(dept.name)}</div>
                   {ranksOrder.map((rk) => {
                     const members = deptPeople.filter((p) => p.rank === rk);
                     if (members.length === 0) return null;
@@ -4523,11 +4636,11 @@ function Org({
             })}
           </div>
           {/* 부서 미배정 직원 */}
-          {people.filter((p) => !p.department_id && !["대표", "본부장"].includes(p.rank)).length > 0 && (
+          {unassignedPeople.length > 0 && (
             <div className="org-unassigned">
               <div className="org-rank-label">부서 미배정</div>
               <div className="org-level">
-                {people.filter((p) => !p.department_id && !["대표", "본부장"].includes(p.rank)).map((p) => (
+                {unassignedPeople.map((p) => (
                   <button key={p.id} className="org-person small" onClick={() => onOpenPerson(p)}>
                     <strong>{p.name}</strong><span className="op-rank-sm">{p.rank}</span>
                   </button>
@@ -4541,15 +4654,15 @@ function Org({
       <div className="card mt">
         <h2 className="card-title">페이지별 권한 현황</h2>
         <p className="card-sub">대표·본부장은 기본 전체 접근입니다. 그 외 직원은 부여된 페이지만 볼 수 있습니다.</p>
-        {permissions.length === 0 ? (
+        {visiblePermissions.length === 0 ? (
           <EmptyState text="추가된 페이지 권한이 없습니다." />
         ) : (
           <div className="permission-list">
-            {permissions.map((permission) => (
+            {visiblePermissions.map((permission) => (
               <div className="permission-row" key={permission.id}>
                 <div>
                   <strong>{people.find((person) => person.id === permission.person_id)?.name || "직원"}</strong>
-                  <span>{permission.page_key} · {permission.permission}</span>
+                  <span>{getMenuLabelByPageKey(permission.page_key)} · {permission.permission}</span>
                 </div>
                 {canManage && <button className="btn small danger" type="button" onClick={() => onDeletePermission(permission)}>삭제</button>}
               </div>
@@ -4675,7 +4788,7 @@ function Modal({
             <label>업무 이메일<span className="field-hint">cs@lupl.kr 같은 공용 메일도 입력할 수 있습니다. 로그인 이메일과 분리 저장됩니다.</span><input name="contact_email" type="email" defaultValue={getPersonContactEmail(selectedPerson)} placeholder="cs@lupl.kr" /></label>
             <label>휴대전화<input name="phone" defaultValue={formatPhoneNumber(selectedPerson?.phone || "")} onInput={handlePhoneInput} placeholder="010-0000-1234" /></label>
             <label>직위<select name="rank" defaultValue={selectedPerson?.rank || "매니저"}>{ranks.map((rank) => <option key={rank}>{rank}</option>)}</select></label>
-            <label>부서<select name="department_id" defaultValue={selectedPerson?.department_id || ""}><option value="">선택 안 함</option>{departments.map((d) => <option value={d.id} key={d.id}>{d.name}</option>)}</select></label>
+            <label>부서<select name="department_id" defaultValue={selectedPerson?.department_id || ""}><option value="">선택 안 함</option>{departments.map((d) => <option value={d.id} key={d.id}>{formatDepartmentName(d.name)}</option>)}</select></label>
             <SalaryFields person={selectedPerson} />
             {selectedPerson?.id === currentPerson.id && (
               <label className="wide">새 비밀번호<span className="field-hint">입력한 경우에만 변경됩니다. 비밀번호는 평문으로 저장하지 않습니다.</span><input name="new_password" type="password" minLength={6} placeholder="새 비밀번호" /></label>
@@ -4701,11 +4814,7 @@ function Modal({
         )}
 
         {modal === "permissionForm" && (
-          <FormModal title="페이지별 권한 추가" desc="선택한 사람에게 특정 페이지 접근 권한을 부여합니다." onSubmit={onCreatePermission} onClose={close} draftKey="lupl.draft.permissionForm">
-            <label>직원<select name="person_id" required>{people.map((p) => <option value={p.id} key={p.id}>{p.name}</option>)}</select></label>
-            <label>페이지<select name="page_key">{menu.map((m) => <option value={pageKeyMap[m.key]} key={m.key}>{m.label}</option>)}</select></label>
-            <label>권한<select name="permission"><option>보기만 가능</option><option>입력 가능</option><option>승인 가능</option><option>관리자</option></select></label>
-          </FormModal>
+          <PermissionForm people={people} onSubmit={onCreatePermission} onClose={close} />
         )}
 
         {modal === "cashForm" && (
@@ -4773,6 +4882,58 @@ type ProjectWizardStep = {
   required?: boolean;
   body: React.ReactNode;
 };
+
+function PermissionForm({
+  people,
+  onSubmit,
+  onClose
+}: {
+  people: Person[];
+  onSubmit: (formData: FormData) => Promise<void>;
+  onClose: () => void;
+}) {
+  const [mode, setMode] = useState<"exclude" | "include">("exclude");
+  const candidates = getPermissionPeople(people);
+  const checkboxName = mode === "exclude" ? "excluded_page_keys" : "page_keys";
+
+  return (
+    <FormModal
+      title="페이지별 권한 추가"
+      desc="등록된 직원에게 여러 페이지 권한을 한 번에 저장합니다."
+      onSubmit={onSubmit}
+      onClose={onClose}
+    >
+      <label>직원<select name="person_id" required disabled={candidates.length === 0}>
+        {candidates.length === 0 ? (
+          <option value="">대시보드 등록 직원 없음</option>
+        ) : (
+          candidates.map((p) => <option value={p.id} key={p.id}>{p.name}</option>)
+        )}
+      </select></label>
+      <label>권한<select name="permission"><option>보기만 가능</option><option>입력 가능</option><option>승인 가능</option><option>관리자</option></select></label>
+      <input type="hidden" name="permission_mode" value={mode} />
+      <div className="permission-mode wide">
+        <button className={mode === "exclude" ? "active" : ""} type="button" onClick={() => setMode("exclude")}>몇 페이지만 제외</button>
+        <button className={mode === "include" ? "active" : ""} type="button" onClick={() => setMode("include")}>선택 페이지만 허용</button>
+      </div>
+      <div className="permission-pick-list wide" key={mode}>
+        <div className="permission-pick-head">
+          <strong>{mode === "exclude" ? "제외할 페이지" : "허용할 페이지"}</strong>
+          <span>{mode === "exclude" ? "체크한 페이지만 숨기고 나머지는 열어둡니다." : "체크한 페이지만 접근 가능합니다."}</span>
+        </div>
+        <div className="permission-check-grid">
+          {permissionAssignableMenu.map((item) => (
+            <label className="permission-check" key={item.key}>
+              <input type="checkbox" name={checkboxName} value={pageKeyMap[item.key]} />
+              <span>{item.label}</span>
+            </label>
+          ))}
+        </div>
+      </div>
+      <div className="form-help wide">경영현황은 기본 화면이라 항상 열립니다. 저장하면 이 직원의 기존 페이지 권한이 새 설정으로 교체됩니다.</div>
+    </FormModal>
+  );
+}
 
 function CashForm({
   onSubmit, onClose

@@ -2584,6 +2584,10 @@ input:focus, select:focus, textarea:focus {
   .proj-kpis { grid-template-columns: repeat(2, 1fr); }
   .proj-bar-row { grid-template-columns: 90px 1fr 90px; gap: 8px; }
   .proj-bar-label, .proj-bar-value { font-size: 11px; }
+  .permission-check-grid { grid-template-columns: 1fr; }
+  .permission-pick-head { display: grid; }
+  .permission-mode { width: 100%; }
+  .permission-mode button { flex: 1; }
 }
 
 /* v4 개선: 상단 작업 패널 분리 */
@@ -2658,6 +2662,93 @@ input:focus, select:focus, textarea:focus {
   color: var(--muted);
   font-size: 12px;
   font-weight: 700;
+}
+
+.permission-mode {
+  display: inline-flex;
+  width: fit-content;
+  gap: 4px;
+  padding: 4px;
+  border-radius: 14px;
+  background: rgba(238, 245, 255, 0.92);
+  border: 1px solid rgba(91, 141, 239, 0.14);
+}
+
+.permission-mode button {
+  border: 0;
+  border-radius: 10px;
+  padding: 10px 14px;
+  background: transparent;
+  color: var(--ink-2);
+  font-weight: 780;
+  cursor: pointer;
+}
+
+.permission-mode button.active {
+  background: #fff;
+  color: #2f6fce;
+  box-shadow: 0 6px 16px rgba(36, 60, 103, 0.1);
+}
+
+.permission-pick-list {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid rgba(16, 24, 40, 0.08);
+  border-radius: 16px;
+  background: rgba(248, 250, 252, 0.72);
+}
+
+.permission-pick-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: baseline;
+}
+
+.permission-pick-head strong {
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 820;
+}
+
+.permission-pick-head span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.permission-check-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.permission-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid rgba(16, 24, 40, 0.07);
+  border-radius: 12px;
+  background: #fff;
+  color: var(--ink-2);
+  font-size: 13px;
+  font-weight: 760;
+}
+
+.permission-check input {
+  width: auto;
+  height: auto;
+  flex: 0 0 auto;
+}
+
+.permission-check span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .org-action-panel {
   position: relative;
