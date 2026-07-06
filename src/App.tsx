@@ -799,6 +799,12 @@ function toFriendlyDbError(error: DbError, fallback: string) {
   if (lower.includes("row-level security") || lower.includes("policy")) {
     return new Error("권한(RLS) 정책에 막혀 저장하지 못했습니다. 로그인 상태와 Supabase RLS 정책을 확인하세요.");
   }
+  if (lower.includes("people_email_key")) {
+    return new Error("이미 같은 로그인 이메일로 등록된 직원이 있습니다. 입사일 기준 자동 사번을 다시 확인하세요. 업무용 공용 메일은 별도 입력칸에 저장됩니다.");
+  }
+  if (lower.includes("people_employee_number_key")) {
+    return new Error("이미 같은 사번으로 등록된 직원이 있습니다. 입사일 기준 자동 사번을 다시 확인하세요.");
+  }
   return new Error(error?.message || fallback);
 }
 
@@ -899,10 +905,19 @@ function normalizeEmployeeNumber(value: string) {
   return value.replace(/[^0-9]/g, "");
 }
 
-function makeEmployeeNumberFromHireDate(hireDate: string, people: Person[], excludePersonId?: string | null) {
+function getEmployeeNumberDatePrefix(hireDate: string) {
   const digits = String(hireDate || "").replace(/[^0-9]/g, "");
   if (digits.length < 8) return "";
-  const prefix = digits.slice(2, 8);
+  return digits.slice(2, 8);
+}
+
+function makeEmployeeNumberFromHireDate(
+  hireDate: string,
+  people: Array<Pick<Person, "id" | "employee_number">>,
+  excludePersonId?: string | null
+) {
+  const prefix = getEmployeeNumberDatePrefix(hireDate);
+  if (!prefix) return "";
   const maxSequence = people.reduce((max, person) => {
     if (excludePersonId && person.id === excludePersonId) return max;
     const number = normalizeEmployeeNumber(person.employee_number || "");
@@ -915,6 +930,31 @@ function makeEmployeeNumberFromHireDate(hireDate: string, people: Person[], excl
 
 function makeInternalEmail(employeeNumber: string) {
   return `${normalizeEmployeeNumber(employeeNumber).toLowerCase()}@employee.lupl.kr`;
+}
+
+const PERSON_CONTACT_EMAIL_LABEL = "업무 이메일";
+
+function isInternalEmployeeEmail(email: string | null | undefined) {
+  return String(email || "").toLowerCase().endsWith("@employee.lupl.kr");
+}
+
+function removeMemoField(memo: string | null | undefined, label: string) {
+  return String(memo || "")
+    .split("\n")
+    .filter((line) => !line.trim().startsWith(`${label}:`))
+    .join("\n")
+    .trim();
+}
+
+function mergePersonContactEmailMemo(memo: string | null | undefined, contactEmail: string | null) {
+  const cleanMemo = removeMemoField(memo, PERSON_CONTACT_EMAIL_LABEL);
+  return [contactEmail ? `${PERSON_CONTACT_EMAIL_LABEL}: ${contactEmail}` : "", cleanMemo].filter(Boolean).join("\n").trim();
+}
+
+function getPersonContactEmail(person: Person | null | undefined) {
+  const memoEmail = readMemoField(person?.memo, PERSON_CONTACT_EMAIL_LABEL);
+  if (memoEmail) return memoEmail;
+  return isInternalEmployeeEmail(person?.email) ? "" : String(person?.email || "");
 }
 
 function makeInitialPassword(phone: string | null | undefined) {
@@ -1806,23 +1846,57 @@ export default function App() {
       const personId = String(formData.get("person_id") || "") || null;
       const rawEmployeeNumber = String(formData.get("employee_number") || "");
       const hireDate = String(formData.get("hire_date") || "") || null;
-      const autoEmployeeNumber = hireDate ? makeEmployeeNumberFromHireDate(hireDate, people, personId) : "";
-      const employeeNumber = rawEmployeeNumber ? normalizeEmployeeNumber(rawEmployeeNumber) : autoEmployeeNumber || null;
-      if (rawEmployeeNumber && employeeNumber !== rawEmployeeNumber.replace(/\s/g, "")) throw new Error("사번은 숫자만 입력하세요.");
+      const prefix = getEmployeeNumberDatePrefix(hireDate || "");
+      const localAutoEmployeeNumber = hireDate ? makeEmployeeNumberFromHireDate(hireDate, people, personId) : "";
+      let sameDayPeople: Array<Pick<Person, "id" | "name" | "email" | "employee_number">> = people;
+      if (prefix) {
+        const { data: freshSameDayPeople } = await supabase
+          .from("people")
+          .select("id,name,email,employee_number")
+          .like("employee_number", `${prefix}%`);
+        if (freshSameDayPeople) sameDayPeople = freshSameDayPeople as Array<Pick<Person, "id" | "name" | "email" | "employee_number">>;
+      }
+      const autoEmployeeNumber = hireDate ? makeEmployeeNumberFromHireDate(hireDate, sameDayPeople, personId) : "";
+      const normalizedRawEmployeeNumber = rawEmployeeNumber ? normalizeEmployeeNumber(rawEmployeeNumber) : "";
+      const shouldUseAutoEmployeeNumber = !personId && hireDate && (!normalizedRawEmployeeNumber || normalizedRawEmployeeNumber === localAutoEmployeeNumber);
+      const employeeNumber = shouldUseAutoEmployeeNumber ? autoEmployeeNumber || null : normalizedRawEmployeeNumber || null;
+      if (rawEmployeeNumber && normalizedRawEmployeeNumber !== rawEmployeeNumber.replace(/\s/g, "")) throw new Error("사번은 숫자만 입력하세요.");
       const phone = String(formData.get("phone") || "") || null;
-      const emailInput = String(formData.get("email") || "").trim() || null;
-      const email = emailInput || (employeeNumber ? makeInternalEmail(employeeNumber) : null);
+      const contactEmail = String(formData.get("contact_email") || "").trim() || null;
+      const loginEmail = (personId ? selectedPerson?.email || null : null) || (employeeNumber ? makeInternalEmail(employeeNumber) : null);
       const newPassword = String(formData.get("new_password") || "");
       const isEditingSelf = Boolean(personId && currentPerson?.id === personId);
 
       if (!personId && !employeeNumber) throw new Error("입사일을 입력하면 사번이 자동 생성됩니다. 입사일을 먼저 입력하세요.");
       if (!personId && !phone) throw new Error("초기 비밀번호 생성을 위해 휴대전화 번호가 필요합니다.");
-      if (!email) throw new Error("이메일 또는 사번이 필요합니다.");
+      if (!loginEmail) throw new Error("입사일/사번 기반 로그인 이메일을 만들 수 없습니다. 입사일과 사번을 확인하세요.");
+
+      if (employeeNumber) {
+        const { data: duplicateNumber } = await supabase
+          .from("people")
+          .select("id,name,email,employee_number")
+          .eq("employee_number", employeeNumber)
+          .maybeSingle();
+        if (duplicateNumber && (!personId || duplicateNumber.id !== personId)) {
+          throw new Error(`사번 ${employeeNumber}은 이미 ${duplicateNumber.name || "기존 직원"}에게 등록되어 있습니다. 입사일을 다시 선택하거나 사번을 확인하세요.`);
+        }
+      }
+
+      if (loginEmail) {
+        const { data: duplicateEmail } = await supabase
+          .from("people")
+          .select("id,name,email,employee_number")
+          .eq("email", loginEmail)
+          .maybeSingle();
+        if (duplicateEmail && (!personId || duplicateEmail.id !== personId)) {
+          throw new Error(`${loginEmail}은 이미 ${duplicateEmail.name || "기존 직원"}에게 등록된 로그인 이메일입니다. 입사일 기준 자동 사번을 다시 확인하세요.`);
+        }
+      }
 
       const payload = {
         name: String(formData.get("name") || ""),
         employee_number: employeeNumber,
-        email,
+        email: loginEmail,
         phone,
         rank: String(formData.get("rank") || "매니저") as Rank,
         department_id: String(formData.get("department_id") || "") || null,
@@ -1832,7 +1906,7 @@ export default function App() {
         weekly_work_days: parseNumber(formData.get("weekly_work_days")) || 5,
         daily_work_hours: parseNumber(formData.get("daily_work_hours")) || 8,
         monthly_capacity_hours: parseNumber(formData.get("monthly_capacity_hours")) || calcMonthlyCapacity(parseNumber(formData.get("weekly_work_days")) || 5, parseNumber(formData.get("daily_work_hours")) || 8),
-        memo: String(formData.get("memo") || ""),
+        memo: mergePersonContactEmailMemo(String(formData.get("memo") || ""), contactEmail),
         is_active: true
       };
 
@@ -1851,7 +1925,7 @@ export default function App() {
         const { error: inviteError } = await supabase.functions.invoke("admin-create-user", {
           body: {
             personId: saved.id,
-            email,
+            email: loginEmail,
             password: initialPassword,
             name: payload.name,
             employeeNumber
@@ -4588,7 +4662,7 @@ function Modal({
         {modal === "personForm" && (
           <FormModal
             title={selectedPerson ? "직원/내 정보 수정" : "직원 등록"}
-            desc={selectedPerson ? "이름, 사번, 연락처, 연봉 정보를 수정합니다. 본인 계정은 새 비밀번호를 입력해 직접 변경할 수 있습니다." : "직원은 사번으로 등록합니다. 관리자는 이메일과 사번을 모두 입력할 수 있고, 이메일이 없으면 사번 기반 내부 로그인 계정을 생성합니다."}
+            desc={selectedPerson ? "이름, 사번, 연락처, 연봉 정보를 수정합니다. 업무 이메일은 공용 메일도 따로 저장할 수 있습니다." : "입사일 기준으로 사번과 로그인 계정을 자동 생성하고, 업무 이메일은 공용 메일도 따로 저장할 수 있습니다."}
             onSubmit={onCreatePerson}
             onClose={close}
             draftKey={selectedPerson ? undefined : "lupl.draft.personForm"}
@@ -4596,7 +4670,7 @@ function Modal({
             <input type="hidden" name="person_id" value={selectedPerson?.id || ""} />
             <label>이름<input name="name" required defaultValue={selectedPerson?.name || ""} placeholder="홍길동" /></label>
             <EmployeeNumberFields person={selectedPerson} people={people} />
-            <label>이메일<span className="field-hint">관리자는 이메일·사번 모두 사용 가능</span><input name="email" type="email" defaultValue={selectedPerson?.email || ""} placeholder="member@lupl.kr" /></label>
+            <label>업무 이메일<span className="field-hint">cs@lupl.kr 같은 공용 메일도 입력할 수 있습니다. 로그인 이메일과 분리 저장됩니다.</span><input name="contact_email" type="email" defaultValue={getPersonContactEmail(selectedPerson)} placeholder="cs@lupl.kr" /></label>
             <label>휴대전화<input name="phone" defaultValue={formatPhoneNumber(selectedPerson?.phone || "")} onInput={handlePhoneInput} placeholder="010-0000-1234" /></label>
             <label>직위<select name="rank" defaultValue={selectedPerson?.rank || "매니저"}>{ranks.map((rank) => <option key={rank}>{rank}</option>)}</select></label>
             <label>부서<select name="department_id" defaultValue={selectedPerson?.department_id || ""}><option value="">선택 안 함</option>{departments.map((d) => <option value={d.id} key={d.id}>{d.name}</option>)}</select></label>
@@ -4605,7 +4679,7 @@ function Modal({
               <label className="wide">새 비밀번호<span className="field-hint">입력한 경우에만 변경됩니다. 비밀번호는 평문으로 저장하지 않습니다.</span><input name="new_password" type="password" minLength={6} placeholder="새 비밀번호" /></label>
             )}
             {!selectedPerson && <div className="form-help wide">초기 비밀번호는 lupl+휴대전화 뒷번호 4자리로 생성되며, 직원은 로그인 후 본인 정보에서 변경할 수 있습니다.</div>}
-            <label className="wide">메모<textarea name="memo" defaultValue={selectedPerson?.memo || ""} /></label>
+            <label className="wide">메모<textarea name="memo" defaultValue={removeMemoField(selectedPerson?.memo, PERSON_CONTACT_EMAIL_LABEL)} /></label>
           </FormModal>
         )}
 
@@ -6200,6 +6274,7 @@ function DetailModal({
     const personBonuses = bonuses.filter((bonus) => bonus.person_id === selectedPerson.id);
     const personLabor = labor.filter((item) => item.person_id === selectedPerson.id);
     const review = compReviews.find((item) => item.person_id === selectedPerson.id);
+    const contactEmail = getPersonContactEmail(selectedPerson);
     const raiseRate = selectedPerson.previous_annual_salary
       ? ((Number(selectedPerson.annual_salary || 0) - Number(selectedPerson.previous_annual_salary || 0)) / Number(selectedPerson.previous_annual_salary)) * 100
       : 0;
@@ -6208,7 +6283,9 @@ function DetailModal({
       <>
         <ModalHead title={`${selectedPerson.name} 상세`} desc="직원별 연봉, 인상률, 지원사업, 상여금, 투입 프로젝트를 봅니다." onClose={onClose} />
         <div className="modal-info">
-          <Info label="기본정보" value={`${selectedPerson.rank} · ${selectedPerson.email || "-"}`} />
+          <Info label="기본정보" value={selectedPerson.rank} />
+          <Info label="로그인 이메일" value={selectedPerson.email || "-"} />
+          <Info label="업무 이메일" value={contactEmail || "-"} />
           <Info label="사번" value={selectedPerson.employee_number || "미등록"} />
           <Info label="입사일" value={selectedPerson.hire_date || "-"} />
           <Info label="계약연봉" value={formatWon(selectedPerson.annual_salary)} />
