@@ -2305,8 +2305,8 @@ export default function App() {
     }
   }
 
-  async function deletePermission(permission: PagePermission) {
-    if (!window.confirm("이 페이지 권한을 삭제할까요?")) return;
+  async function deletePermission(permission: PagePermission, options: { confirm?: boolean } = {}) {
+    if (options.confirm !== false && !window.confirm("이 페이지 권한을 삭제할까요?")) return;
     try {
       const { error } = await supabase.from("page_permissions").delete().eq("id", permission.id);
       if (error) throw toFriendlyDbError(error, "권한 삭제에 실패했습니다.");
@@ -3030,15 +3030,8 @@ function AuthScreen() {
     if (value.includes("@")) return value;
 
     const employeeNumber = normalizeEmployeeNumber(value);
-    const { data, error } = await supabase
-      .from("people")
-      .select("email, name")
-      .eq("employee_number", employeeNumber)
-      .maybeSingle();
-
-    if (error) throw error;
-    if (!data?.email) throw new Error("등록되지 않은 사번입니다. 관리자에게 직원 등록을 요청하세요.");
-    return data.email as string;
+    if (!employeeNumber) throw new Error("사번 또는 이메일을 입력하세요.");
+    return makeInternalEmail(employeeNumber);
   }
 
   async function handleAuth(formData: FormData) {
@@ -3055,7 +3048,12 @@ function AuthScreen() {
       if (mode === "login") {
         const email = await resolveLoginEmail(identifier);
         const result = await supabase.auth.signInWithPassword({ email, password });
-        if (result.error) throw result.error;
+        if (result.error) {
+          if (!identifier.includes("@")) {
+            throw new Error("사번 로그인 계정이 아직 생성되지 않았거나 초기 비밀번호가 다릅니다. 관리자에게 직원 정보 수정 화면에서 다시 저장해 달라고 요청하세요.");
+          }
+          throw result.error;
+        }
         setMessage("로그인했습니다.");
       } else {
         if (!identifier.includes("@")) throw new Error("초기 관리자 가입은 이메일로 진행하세요. 직원은 관리자가 사번으로 등록합니다.");
@@ -4552,7 +4550,7 @@ function Org({
   permissions: PagePermission[];
   onCreatePerson: () => void;
   onCreatePermission: () => void;
-  onDeletePermission: (permission: PagePermission) => void;
+  onDeletePermission: (permission: PagePermission, options?: { confirm?: boolean }) => void;
   onOpenPerson: (person: Person) => void;
 }) {
   const ranksOrder: Rank[] = ["책임", "선임", "매니저"];
@@ -4562,6 +4560,15 @@ function Org({
   const permissionPeople = getPermissionPeople(people);
   const permissionPeopleIds = new Set(permissionPeople.map((person) => person.id));
   const visiblePermissions = permissions.filter((permission) => permissionPeopleIds.has(permission.person_id));
+  const [openPermissionPeople, setOpenPermissionPeople] = useState<Record<string, boolean>>({});
+  const permissionGroups = permissionPeople
+    .map((person) => ({
+      person,
+      permissions: visiblePermissions
+        .filter((permission) => permission.person_id === person.id)
+        .sort((a, b) => permissionAssignableMenu.findIndex((item) => pageKeyMap[item.key] === a.page_key) - permissionAssignableMenu.findIndex((item) => pageKeyMap[item.key] === b.page_key))
+    }))
+    .filter((group) => group.permissions.length > 0);
 
   return (
     <section className="section active">
@@ -4654,19 +4661,46 @@ function Org({
       <div className="card mt">
         <h2 className="card-title">페이지별 권한 현황</h2>
         <p className="card-sub">대표·본부장은 기본 전체 접근입니다. 그 외 직원은 부여된 페이지만 볼 수 있습니다.</p>
-        {visiblePermissions.length === 0 ? (
+        {permissionGroups.length === 0 ? (
           <EmptyState text="추가된 페이지 권한이 없습니다." />
         ) : (
           <div className="permission-list">
-            {visiblePermissions.map((permission) => (
-              <div className="permission-row" key={permission.id}>
-                <div>
-                  <strong>{people.find((person) => person.id === permission.person_id)?.name || "직원"}</strong>
-                  <span>{getMenuLabelByPageKey(permission.page_key)} · {permission.permission}</span>
-                </div>
-                {canManage && <button className="btn small danger" type="button" onClick={() => onDeletePermission(permission)}>삭제</button>}
+            {permissionGroups.map(({ person, permissions: personPermissions }) => {
+              const isOpen = Boolean(openPermissionPeople[person.id]);
+              return (
+              <div className={`permission-person-card ${isOpen ? "is-open" : ""}`} key={person.id}>
+                <button
+                  className="permission-person-head"
+                  type="button"
+                  onClick={() => setOpenPermissionPeople((prev) => ({ ...prev, [person.id]: !prev[person.id] }))}
+                >
+                  <div>
+                    <strong>{person.name}</strong>
+                    <span>{person.employee_number ? `${person.employee_number} · ` : ""}{personPermissions.length}개 페이지 허용</span>
+                  </div>
+                  <em>{isOpen ? "접기" : "상세"}</em>
+                </button>
+                {isOpen && (
+                  <div className="permission-page-list">
+                    {personPermissions.map((permission) => (
+                      <label className="permission-page-item" key={permission.id}>
+                        <input
+                          type="checkbox"
+                          checked
+                          onChange={(event) => {
+                            if (!event.currentTarget.checked) void onDeletePermission(permission, { confirm: false });
+                          }}
+                          disabled={!canManage}
+                        />
+                        <span>{getMenuLabelByPageKey(permission.page_key)}</span>
+                        <em>{permission.permission}</em>
+                      </label>
+                    ))}
+                  </div>
+                )}
               </div>
-            ))}
+            );
+            })}
           </div>
         )}
       </div>
