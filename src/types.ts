@@ -2,6 +2,8 @@ export type Rank = "대표" | "본부장" | "책임" | "선임" | "매니저";
 export type DepartmentName = "홍보마케팅부" | "경영지원부" | "AI부" | "개발부" | "디자인부";
 export type ReviewStatus = "검토 전" | "승인" | "보류" | "수정 요청" | "반려";
 export type PermissionLevel = "보기만 가능" | "입력 가능" | "승인 가능" | "관리자";
+export type ImprovementType = "bug" | "ux" | "data" | "automation" | "permission" | "workflow" | "idea";
+export type ImprovementStatus = "open" | "reviewing" | "planned" | "done" | "dismissed";
 
 // 실제 노션 지출결의 기준 사용 용도(=지출 카테고리)
 export type ExpenseUsage =
@@ -77,6 +79,27 @@ export type PagePermission = {
   person_id: string;
   page_key: string;
   permission: PermissionLevel;
+};
+
+export type ImprovementRequest = {
+  id: string;
+  created_by: string | null;
+  request_type: ImprovementType | string;
+  request_type_label: string;
+  menu_id: string | null;
+  menu_label: string | null;
+  submenu_label: string | null;
+  page_title: string | null;
+  page_path: string | null;
+  note: string;
+  status: ImprovementStatus;
+  ai_summary: string | null;
+  ai_payload: Record<string, unknown> | null;
+  user_agent: string | null;
+  viewport_width: number | null;
+  viewport_height: number | null;
+  created_at?: string;
+  updated_at?: string;
 };
 
 // 결제수단 마스터 (법인/개인카드 등을 미리 등록)

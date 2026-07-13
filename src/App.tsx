@@ -24,6 +24,9 @@ import type {
   ExpenseRequest,
   ExpenseUsage,
   FinancialMonthlyPlan,
+  ImprovementRequest,
+  ImprovementStatus,
+  ImprovementType,
   MobileReceiptDevice,
   PagePermission,
   PaymentCard,
@@ -50,6 +53,7 @@ type SectionKey =
   | "compensation"
   | "margin"
   | "resource"
+  | "improvement"
   | "org";
 
 type ModalKey =
@@ -72,6 +76,7 @@ type ModalKey =
   | "categoryManage"
   | "cardManage"
   | "mobileDeviceManage"
+  | "improvementForm"
   | "reviewDetail"
   | null;
 
@@ -182,6 +187,10 @@ const sectionMeta: Record<SectionKey, { title: string; desc: string }> = {
   org: {
     title: "조직·권한관리",
     desc: "조직도와 페이지별 접근 권한을 관리합니다. 직급 아래 실제 직원이 배치됩니다."
+  },
+  improvement: {
+    title: "개선함",
+    desc: "페이지별·카테고리별 개선 요청을 모아 우선순위와 진행 상태를 함께 관리합니다."
   }
 };
 
@@ -195,6 +204,7 @@ const menu: Array<{ key: SectionKey; label: string }> = [
   { key: "compensation", label: "인건비·보상" },
   { key: "margin", label: "마진계산기" },
   { key: "resource", label: "인력투입·매출분석" },
+  { key: "improvement", label: "개선함" },
   { key: "org", label: "조직·권한관리" }
 ];
 
@@ -208,7 +218,22 @@ const pageKeyMap: Record<SectionKey, string> = {
   compensation: "compensation",
   margin: "margin",
   resource: "resource",
+  improvement: "improvement",
   org: "org"
+};
+
+const improvementSubmenuOptions: Record<SectionKey, string[]> = {
+  overview: ["현재 현금", "현금 흐름", "통장별 현금", "KPI 카드", "런웨이"],
+  finance: ["월별 계획", "실제 비교", "자금지도", "손익분기점", "현금 계획"],
+  ai: ["AI 질문", "프로젝트 초안", "강사 정산", "고용/인건비", "버튼 선택지"],
+  review: ["대표 검토함", "승인/보류", "검토 상세", "검토 알림"],
+  expense: ["빠른 지출", "정기결제", "영수증 OCR", "카드/계좌", "소분류", "이체 요청"],
+  revenue: ["프로젝트 등록", "프로젝트 상세", "매출/입금", "책임자", "카테고리"],
+  compensation: ["직원 등록", "월급/연봉", "상여금", "근태 운영설정", "지원사업"],
+  margin: ["강의 계산", "프로젝트 계산", "강사 직접수령", "회사 회수액", "PDF/저장"],
+  resource: ["맨먼스", "수익성 지도", "투입률", "프로젝트명", "가동률"],
+  improvement: ["플로팅 메모", "개선 요청 목록", "AI 정리", "GitHub Issue", "상태 관리"],
+  org: ["조직도", "부서", "페이지 권한", "직원 상세", "로그인 계정"]
 };
 
 const DESIGN_DEPARTMENT_NAME: Department["name"] = "디자인부";
@@ -385,6 +410,22 @@ const ranks: Rank[] = ["대표", "본부장", "책임", "선임", "매니저"];
 const bonusRateOptions = ["5%", "10%", "15%", "20%", "30%"];
 const raiseRateOptions = ["동결", "3%", "4%", "5%", "협의"];
 void raiseRateOptions;
+const improvementTypes: Array<{ value: ImprovementType; label: string }> = [
+  { value: "bug", label: "오류" },
+  { value: "ux", label: "UI/UX" },
+  { value: "data", label: "데이터" },
+  { value: "automation", label: "자동화" },
+  { value: "permission", label: "권한" },
+  { value: "workflow", label: "업무흐름" },
+  { value: "idea", label: "아이디어" }
+];
+const improvementStatusLabels: Record<ImprovementStatus, string> = {
+  open: "대기",
+  reviewing: "검토",
+  planned: "수정 예정",
+  done: "개선완료",
+  dismissed: "보류"
+};
 const marginMemoStart = "__LUPL_MARGIN_CALC_START__";
 const marginMemoEnd = "__LUPL_MARGIN_CALC_END__";
 
@@ -920,6 +961,7 @@ const draftStore = {
 };
 
 const financePlanBackupKey = "lupl.financialMonthlyPlans.v1";
+const improvementBackupKey = "lupl.improvementRequests.v1";
 
 function readFinancePlanBackup(): FinancialMonthlyPlan[] {
   try {
@@ -928,6 +970,24 @@ function readFinancePlanBackup(): FinancialMonthlyPlan[] {
     return Array.isArray(parsed) ? parsed as FinancialMonthlyPlan[] : [];
   } catch {
     return [];
+  }
+}
+
+function readImprovementBackup(): ImprovementRequest[] {
+  try {
+    const raw = window.localStorage.getItem(improvementBackupKey);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed as ImprovementRequest[] : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeImprovementBackup(rows: ImprovementRequest[]) {
+  try {
+    window.localStorage.setItem(improvementBackupKey, JSON.stringify(rows.slice(0, 300)));
+  } catch {
+    /* local backup is best-effort */
   }
 }
 
@@ -1095,6 +1155,8 @@ export default function App() {
   const [financePlanTableReady, setFinancePlanTableReady] = useState(true);
   const [mobileDevices, setMobileDevices] = useState<MobileReceiptDevice[]>([]);
   const [mobileDeviceTableReady, setMobileDeviceTableReady] = useState(true);
+  const [improvements, setImprovements] = useState<ImprovementRequest[]>([]);
+  const [improvementTableReady, setImprovementTableReady] = useState(true);
 
   const [section, setSection] = useState<SectionKey>("overview");
   const [modal, setModal] = useState<ModalKey>(null);
@@ -1265,6 +1327,18 @@ export default function App() {
         setFinancePlans(loadedPlans);
         writeFinancePlanBackup(loadedPlans);
       }
+
+      const improvementsRes = await supabase.from("improvement_requests").select("*").order("created_at", { ascending: false }).limit(300);
+      if (improvementsRes.error) {
+        console.warn("improvement_requests not ready", improvementsRes.error);
+        setImprovementTableReady(false);
+        setImprovements(readImprovementBackup());
+      } else {
+        setImprovementTableReady(true);
+        const loadedImprovements = (improvementsRes.data || []) as ImprovementRequest[];
+        setImprovements(loadedImprovements);
+        writeImprovementBackup(loadedImprovements);
+      }
     } catch (error) {
       console.error(error);
       showToast(error instanceof Error ? error.message : "데이터를 불러오지 못했습니다.", "err");
@@ -1361,6 +1435,64 @@ export default function App() {
   async function createReviewItem(payload: Omit<ReviewItem, "id">) {
     const { error } = await saveWithHealing("review_items", payload as unknown as Record<string, unknown>);
     if (error) throw toFriendlyDbError(error, "검토 항목 생성에 실패했습니다.");
+  }
+
+  async function createImprovementRequest(payload: Omit<ImprovementRequest, "id" | "created_at" | "updated_at">) {
+    const createdAt = new Date().toISOString();
+    const localRow: ImprovementRequest = {
+      id: crypto.randomUUID(),
+      ...payload,
+      created_at: createdAt,
+      updated_at: createdAt
+    };
+
+    if (!improvementTableReady) {
+      const next = [localRow, ...improvements].slice(0, 300);
+      setImprovements(next);
+      writeImprovementBackup(next);
+      showToast("개선 요청을 이 브라우저에 임시저장했습니다. DB 패치 후 Supabase에 저장됩니다.", "warn");
+      return;
+    }
+
+    const { data, error } = await saveWithHealing<ImprovementRequest>("improvement_requests", payload as unknown as Record<string, unknown>);
+    if (error) {
+      if (String(error.message || "").includes("improvement_requests")) {
+        const next = [localRow, ...improvements].slice(0, 300);
+        setImprovementTableReady(false);
+        setImprovements(next);
+        writeImprovementBackup(next);
+        showToast("개선 요청 테이블이 아직 없어 브라우저에 임시저장했습니다.", "warn");
+        return;
+      }
+      throw toFriendlyDbError(error, "개선 요청 저장에 실패했습니다.");
+    }
+    if (data) {
+      const next = [data, ...improvements.filter((item) => item.id !== data.id)].slice(0, 300);
+      setImprovements(next);
+      writeImprovementBackup(next);
+    }
+    showToast("개선 요청함에 저장했습니다.");
+  }
+
+  async function updateImprovementStatus(item: ImprovementRequest, status: ImprovementStatus) {
+    const updatedAt = new Date().toISOString();
+    const next = improvements.map((row) => row.id === item.id ? { ...row, status, updated_at: updatedAt } : row);
+
+    if (!improvementTableReady) {
+      setImprovements(next);
+      writeImprovementBackup(next);
+      showToast(`${improvementStatusLabels[status]} 상태로 임시저장했습니다.`, "warn");
+      return;
+    }
+
+    const { error } = await supabase.from("improvement_requests").update({ status, updated_at: updatedAt }).eq("id", item.id);
+    if (error) {
+      showToast(error.message || "개선 요청 상태 변경 실패", "err");
+      return;
+    }
+    setImprovements(next);
+    writeImprovementBackup(next);
+    showToast(`${improvementStatusLabels[status]} 처리했습니다.`);
   }
 
   async function updateReviewStatus(review: ReviewItem, status: ReviewStatus) {
@@ -1722,9 +1854,7 @@ export default function App() {
         storagePath = `${currentPerson?.id || "unknown"}/${Date.now()}-${file.name}`;
         const { error: uploadError } = await supabase.storage.from("receipts").upload(storagePath, file, { upsert: true });
         if (uploadError) {
-          console.warn("receipt upload skipped", uploadError);
-          showToast("영수증 파일 저장은 실패했지만 지출결의는 저장합니다. Storage 설정을 확인하세요.", "warn");
-          storagePath = null;
+          throw new Error(`영수증 파일 저장에 실패했습니다. 지출결의는 저장하지 않았습니다. ${uploadError.message}`);
         } else {
           const { data: signed } = await supabase.storage.from("receipts").createSignedUrl(storagePath, 60 * 60 * 24 * 7);
           fileUrl = signed?.signedUrl || null;
@@ -1787,7 +1917,7 @@ export default function App() {
         supply_amount: supplyAmount,
         vat_amount: vatAmount,
         paid_at: paidAt || null,
-        evidence_status: quickRecurring ? "정기결제" : fileUrl ? "영수증 첨부" : "증빙 필요",
+        evidence_status: quickRecurring ? "정기결제" : storagePath ? "영수증 첨부" : "증빙 필요",
         transfer_status: String(formData.get("transfer_status") || "해당 없음") as TransferStatus,
         transfer_summary: String(formData.get("transfer_summary") || "") || null,
         project_id: projectId || null,
@@ -2999,6 +3129,16 @@ export default function App() {
             }}
           />
         )}
+        {section === "improvement" && (
+          <ImprovementRequestsPage
+            currentPerson={currentPerson}
+            people={people}
+            rows={improvements}
+            tableReady={improvementTableReady}
+            onUpdateStatus={updateImprovementStatus}
+            onReload={loadAll}
+          />
+        )}
         {section === "org" && (
           <Org
             currentPerson={currentPerson}
@@ -3017,6 +3157,12 @@ export default function App() {
         )}
 
         <FloatingActions onQuick={() => { setSection("expense"); setModal("expenseForm"); }} />
+        <ImprovementQuickCapture
+          currentPerson={currentPerson}
+          currentSection={section}
+          currentPageTitle={activeMeta.title}
+          onSave={createImprovementRequest}
+        />
       </main>
 
       <Modal
@@ -3066,6 +3212,323 @@ export default function App() {
         }}
       />
     </div>
+  );
+}
+
+function ImprovementQuickCapture({
+  currentPerson,
+  currentSection,
+  currentPageTitle,
+  onSave
+}: {
+  currentPerson: Person;
+  currentSection: SectionKey;
+  currentPageTitle: string;
+  onSave: (payload: Omit<ImprovementRequest, "id" | "created_at" | "updated_at">) => Promise<void>;
+}) {
+  const [open, setOpen] = useState(false);
+  const [requestType, setRequestType] = useState<ImprovementType>("bug");
+  const [menuId, setMenuId] = useState<SectionKey>(currentSection);
+  const [submenu, setSubmenu] = useState("");
+  const [note, setNote] = useState("");
+  const [message, setMessage] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.ctrlKey && event.shiftKey && event.key.toLowerCase() === "m") {
+        event.preventDefault();
+        setMenuId(currentSection);
+        setOpen(true);
+      }
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [currentSection]);
+
+  const selectedMenu = menu.find((item) => item.key === menuId);
+  const submenuOptions = improvementSubmenuOptions[menuId] || [];
+
+  async function save() {
+    setMessage("");
+    if (!note.trim()) {
+      setMessage("개선 메모를 입력해주세요.");
+      return;
+    }
+    setBusy(true);
+    try {
+      const selectedType = improvementTypes.find((type) => type.value === requestType);
+      await onSave({
+        created_by: currentPerson.id,
+        request_type: requestType,
+        request_type_label: selectedType?.label || requestType,
+        menu_id: menuId,
+        menu_label: selectedMenu?.label || currentPageTitle,
+        submenu_label: submenu || null,
+        page_title: currentPageTitle,
+        page_path: `${window.location.pathname}${window.location.hash}`,
+        note: note.trim(),
+        status: "open",
+        ai_summary: null,
+        ai_payload: {},
+        user_agent: navigator.userAgent,
+        viewport_width: window.innerWidth,
+        viewport_height: window.innerHeight
+      });
+      setMessage("개선 요청함에 저장되었습니다.");
+      setNote("");
+      setSubmenu("");
+      window.setTimeout(() => setOpen(false), 650);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "개선 요청 저장 실패");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <>
+      <button
+        className="improvement-fab"
+        title="개선 메모 열기 (Ctrl+Shift+M)"
+        type="button"
+        onClick={() => {
+          setMenuId(currentSection);
+          setOpen(true);
+        }}
+      >
+        개선
+      </button>
+      {open && (
+        <div className="improvement-backdrop" onClick={() => setOpen(false)}>
+          <div className="improvement-modal" onClick={(event) => event.stopPropagation()}>
+            <ModalHead title="개선 메모" desc={`현재 화면: ${currentPageTitle} · Ctrl+Shift+M`} onClose={() => setOpen(false)} />
+            <div className="modal-form improvement-capture-form">
+              <label>메모 유형<select value={requestType} onChange={(event) => setRequestType(event.target.value as ImprovementType)}>
+                {improvementTypes.map((type) => <option key={type.value} value={type.value}>{type.label}</option>)}
+              </select></label>
+              <label>페이지<select value={menuId} onChange={(event) => { setMenuId(event.target.value as SectionKey); setSubmenu(""); }}>
+                {menu.map((item) => <option key={item.key} value={item.key}>{item.label}</option>)}
+              </select></label>
+              <label className="wide">하위 항목<select value={submenu} onChange={(event) => setSubmenu(event.target.value)}>
+                <option value="">선택 안 함</option>
+                {submenuOptions.map((option) => <option key={option} value={option}>{option}</option>)}
+              </select></label>
+              <label className="wide">메모<textarea value={note} onChange={(event) => setNote(event.target.value)} placeholder="예: 지출결의에서 정기결제가 너무 크게 보여서 일반 지출이 잘 안 보여요." /></label>
+              {message && <div className={`form-help wide ${message.includes("저장") ? "" : "warn"}`}>{message}</div>}
+              <div className="modal-actions wide">
+                <button className="btn" type="button" onClick={() => setOpen(false)}>닫기</button>
+                <button className="btn blue" type="button" disabled={busy} onClick={save}>{busy ? "저장 중" : "저장"}</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+function ImprovementRequestsPage({
+  currentPerson,
+  people,
+  rows,
+  tableReady,
+  onUpdateStatus,
+  onReload
+}: {
+  currentPerson: Person;
+  people: Person[];
+  rows: ImprovementRequest[];
+  tableReady: boolean;
+  onUpdateStatus: (item: ImprovementRequest, status: ImprovementStatus) => Promise<void>;
+  onReload: () => Promise<void>;
+}) {
+  const [statusFilter, setStatusFilter] = useState<ImprovementStatus | "all">("open");
+  const [menuFilter, setMenuFilter] = useState<SectionKey | "all">("all");
+  const [typeFilter, setTypeFilter] = useState<ImprovementType | "all">("all");
+  const [message, setMessage] = useState("");
+  const [aiBusy, setAiBusy] = useState(false);
+  const [aiSummary, setAiSummary] = useState<Record<string, unknown> | null>(null);
+  const [githubBusy, setGithubBusy] = useState(false);
+  const [githubIssue, setGithubIssue] = useState<{ number?: number; html_url?: string; title?: string } | null>(null);
+  const isManager = canManage(currentPerson);
+  const personName = (id: string | null | undefined) => people.find((person) => person.id === id)?.name || "작성자";
+  const visible = rows.filter((row) => {
+    const statusOk = statusFilter === "all" || row.status === statusFilter;
+    const menuOk = menuFilter === "all" || row.menu_id === menuFilter;
+    const typeOk = typeFilter === "all" || row.request_type === typeFilter;
+    const ownerOk = isManager || row.created_by === currentPerson.id;
+    return statusOk && menuOk && typeOk && ownerOk;
+  });
+  const openCount = rows.filter((row) => row.status === "open").length;
+  const plannedCount = rows.filter((row) => row.status === "planned").length;
+  const doneCount = rows.filter((row) => row.status === "done").length;
+  const activeRows = visible.filter((row) => !["done", "dismissed"].includes(row.status));
+
+  async function summarize() {
+    if (!isManager) return;
+    setMessage("");
+    setAiBusy(true);
+    setAiSummary(null);
+    try {
+      const { data: sessionData } = await supabase.auth.getSession();
+      const token = sessionData.session?.access_token;
+      if (!token) throw new Error("로그인이 필요합니다.");
+      const response = await fetch("/api/improvement-summarize", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          requests: visible.slice(0, 80).map((row) => ({
+            id: row.id,
+            type: row.request_type_label || row.request_type,
+            menu: row.menu_label,
+            submenu: row.submenu_label,
+            note: row.note,
+            status: improvementStatusLabels[row.status] || row.status,
+            created_at: row.created_at,
+            requester: personName(row.created_by)
+          }))
+        })
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data?.error || "AI 정리 실패");
+      setAiSummary(data.summary || null);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "AI 정리 실패");
+    } finally {
+      setAiBusy(false);
+    }
+  }
+
+  async function createGithubIssue() {
+    if (!isManager) return;
+    if (activeRows.length === 0) {
+      setMessage("GitHub Issue로 보낼 개선 요청이 없습니다.");
+      return;
+    }
+    setMessage("");
+    setGithubBusy(true);
+    setGithubIssue(null);
+    try {
+      const { data: sessionData } = await supabase.auth.getSession();
+      const token = sessionData.session?.access_token;
+      if (!token) throw new Error("로그인이 필요합니다.");
+      const response = await fetch("/api/improvement-github-issue", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          requests: activeRows.slice(0, 100).map((row) => ({
+            id: row.id,
+            type: row.request_type_label || row.request_type,
+            menu: row.menu_label,
+            submenu: row.submenu_label,
+            note: row.note,
+            status: improvementStatusLabels[row.status] || row.status,
+            created_at: row.created_at,
+            requester: personName(row.created_by)
+          }))
+        })
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data?.error || "GitHub Issue 생성 실패");
+      setGithubIssue(data.issue || null);
+      setMessage(`GitHub Issue #${data.issue?.number} 생성 완료`);
+      await Promise.all(activeRows.map((row) => onUpdateStatus(row, "planned")));
+      await onReload();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "GitHub Issue 생성 실패");
+    } finally {
+      setGithubBusy(false);
+    }
+  }
+
+  async function markVisibleDone() {
+    if (!isManager || activeRows.length === 0) return;
+    if (!window.confirm(`현재 보이는 개선 요청 ${activeRows.length}건을 개선완료로 변경할까요?`)) return;
+    await Promise.all(activeRows.map((row) => onUpdateStatus(row, "done")));
+    await onReload();
+  }
+
+  return (
+    <section className="section active improvement-page">
+      {!tableReady && (
+        <div className="alert-top info">
+          <div>
+            <strong>개선 요청 테이블이 아직 DB에 없습니다.</strong>
+            <span>지금은 이 브라우저에 임시저장합니다. Supabase SQL 패치를 실행하면 같은 화면에서 DB 저장으로 전환됩니다.</span>
+          </div>
+        </div>
+      )}
+      <div className="grid four improvement-metrics">
+        <KpiCard compact label="대기" value={`${openCount}건`} chip="수집됨" tone="orange" />
+        <KpiCard compact label="수정 예정" value={`${plannedCount}건`} chip="작업화" tone="blue" />
+        <KpiCard compact label="개선완료" value={`${doneCount}건`} chip="완료" tone="green" />
+        <KpiCard compact label="현재 보기" value={`${visible.length}건`} chip="필터" tone="purple" />
+      </div>
+      <div className="card solid">
+        <div className="improvement-head">
+          <div>
+            <h2 className="card-title">개선 요청함</h2>
+            <p className="card-sub">근태관리처럼 우측 하단 개선 메모가 페이지·하위 항목·유형별로 쌓입니다.</p>
+          </div>
+          {isManager && (
+            <div className="section-toolbar no-margin">
+              <button className="btn small" type="button" onClick={summarize} disabled={aiBusy || visible.length === 0}>{aiBusy ? "정리 중" : "AI 정리"}</button>
+              <button className="btn small" type="button" onClick={markVisibleDone} disabled={activeRows.length === 0}>현재 보기 완료</button>
+              <button className="btn small blue" type="button" onClick={createGithubIssue} disabled={githubBusy || activeRows.length === 0}>{githubBusy ? "보내는 중" : "GitHub Issue"}</button>
+            </div>
+          )}
+        </div>
+        {message && <div className={`form-help ${message.includes("완료") || message.includes("생성") ? "" : "warn"}`}>{message}</div>}
+        {githubIssue?.html_url && <div className="form-help"><a href={githubIssue.html_url} target="_blank" rel="noreferrer">GitHub Issue #{githubIssue.number} 열기</a></div>}
+        {aiSummary && (
+          <div className="improvement-ai-box">
+            <strong>AI 정리</strong>
+            <pre>{JSON.stringify(aiSummary, null, 2)}</pre>
+          </div>
+        )}
+        <div className="improvement-filters">
+          <label>상태<select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value as ImprovementStatus | "all")}>
+            <option value="open">대기</option>
+            <option value="all">전체</option>
+            {Object.entries(improvementStatusLabels).filter(([key]) => key !== "open").map(([key, label]) => <option key={key} value={key}>{label}</option>)}
+          </select></label>
+          <label>페이지<select value={menuFilter} onChange={(event) => setMenuFilter(event.target.value as SectionKey | "all")}>
+            <option value="all">전체 페이지</option>
+            {menu.map((item) => <option key={item.key} value={item.key}>{item.label}</option>)}
+          </select></label>
+          <label>유형<select value={typeFilter} onChange={(event) => setTypeFilter(event.target.value as ImprovementType | "all")}>
+            <option value="all">전체 유형</option>
+            {improvementTypes.map((type) => <option key={type.value} value={type.value}>{type.label}</option>)}
+          </select></label>
+        </div>
+        <div className="improvement-stack">
+          {visible.length === 0 ? (
+            <EmptyState text="표시할 개선 요청이 없습니다. 우측 하단 개선 버튼으로 메모를 남길 수 있습니다." />
+          ) : visible.map((row) => (
+            <article className="improvement-item" key={row.id}>
+              <div className="improvement-item-head">
+                <div>
+                  <span>{row.request_type_label || row.request_type}</span>
+                  <strong>{row.menu_label || "페이지 미지정"}{row.submenu_label ? ` · ${row.submenu_label}` : ""}</strong>
+                </div>
+                <em>{improvementStatusLabels[row.status] || row.status}</em>
+              </div>
+              <p>{row.note}</p>
+              <small>{personName(row.created_by)} · {formatDateTime(row.created_at || null)} · {row.page_title || "-"}</small>
+              {isManager && (
+                <div className="action-cell improvement-actions">
+                  {row.status !== "reviewing" && <button className="btn small" type="button" onClick={() => onUpdateStatus(row, "reviewing")}>검토</button>}
+                  {row.status !== "planned" && <button className="btn small" type="button" onClick={() => onUpdateStatus(row, "planned")}>수정 예정</button>}
+                  {row.status !== "done" && <button className="btn small blue" type="button" onClick={() => onUpdateStatus(row, "done")}>완료</button>}
+                  {row.status !== "dismissed" && <button className="btn small" type="button" onClick={() => onUpdateStatus(row, "dismissed")}>보류</button>}
+                </div>
+              )}
+            </article>
+          ))}
+        </div>
+      </div>
+    </section>
   );
 }
 
@@ -6547,6 +7010,7 @@ function DetailModal({
   if ((modal === "expenseReview" || modal === "taxReview") && selectedExpense) {
     const linkedProject = projects.find((project) => project.id === selectedExpense.project_id);
     const receiptUrl = getExpenseReceiptUrl(selectedExpense);
+    const hasReceiptFile = Boolean(selectedExpense.receipt_storage_path || receiptUrl);
     const deviceId = getExpenseDeviceId(selectedExpense);
     const deviceOwner = getDeviceOwnerName(deviceId, mobileDevices);
     const visibleMemo = cleanExpenseMemo(selectedExpense.memo);
@@ -6577,19 +7041,11 @@ function DetailModal({
           <Info label="업로드 담당자" value={deviceOwner || (deviceId ? "미등록 기기" : "-")} />
           <Info label="OCR 거래처" value={selectedExpense.ocr_vendor_name || "OCR 미실행/미인식"} />
           <Info label="OCR 금액" value={selectedExpense.ocr_total_amount ? formatWon(selectedExpense.ocr_total_amount) : "-"} />
-          <Info label="파일" value={receiptUrl ? "첨부됨" : "없음"} />
+          <Info label="파일" value={hasReceiptFile ? "첨부됨" : "없음"} />
           <Info label="이체 내용 요약" value={selectedExpense.transfer_summary || "-"} />
           <Info label="메모" value={visibleMemo || "-"} />
         </div>
-        {receiptUrl && (
-          <div className="receipt-preview">
-            <div className="receipt-preview-head">
-              <strong>영수증 이미지</strong>
-              <a className="btn small" href={receiptUrl} target="_blank" rel="noreferrer">원본 열기</a>
-            </div>
-            <img src={receiptUrl} alt={`${selectedExpense.purpose} 영수증`} loading="lazy" />
-          </div>
-        )}
+        {hasReceiptFile && <ExpenseReceiptPreview expense={selectedExpense} fallbackUrl={receiptUrl} />}
         <ReviewActions selectedReview={selectedReview} onClose={onClose} onReviewStatus={onReviewStatus} onDeleteReview={onDeleteReview}>
           <button className="btn" type="button" onClick={onEditExpense}>지출결의 수정</button>
           <button className="btn danger" type="button" onClick={() => onDeleteExpense(selectedExpense)}>지출결의 삭제</button>
@@ -6616,6 +7072,48 @@ function DetailModal({
       </div>
       <ReviewActions selectedReview={selectedReview} onClose={onClose} onReviewStatus={onReviewStatus} onDeleteReview={onDeleteReview} />
     </>
+  );
+}
+
+function ExpenseReceiptPreview({ expense, fallbackUrl }: { expense: ExpenseRequest; fallbackUrl: string }) {
+  const [url, setUrl] = useState(fallbackUrl);
+  const [message, setMessage] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    async function refreshSignedUrl() {
+      if (!expense.receipt_storage_path) {
+        setUrl(fallbackUrl);
+        return;
+      }
+      const { data, error } = await supabase.storage.from("receipts").createSignedUrl(expense.receipt_storage_path, 60 * 60 * 24 * 7);
+      if (cancelled) return;
+      if (error) {
+        setMessage(`영수증 링크 재발급 실패: ${error.message}`);
+        setUrl(fallbackUrl);
+      } else {
+        setMessage("");
+        setUrl(data?.signedUrl || fallbackUrl);
+      }
+    }
+    void refreshSignedUrl();
+    return () => {
+      cancelled = true;
+    };
+  }, [expense.receipt_storage_path, fallbackUrl]);
+
+  if (!url && message) return <div className="form-help warn">{message}</div>;
+  if (!url) return null;
+
+  return (
+    <div className="receipt-preview">
+      <div className="receipt-preview-head">
+        <strong>영수증 이미지</strong>
+        <a className="btn small" href={url} target="_blank" rel="noreferrer">원본 열기</a>
+      </div>
+      {message && <div className="form-help warn">{message}</div>}
+      <img src={url} alt={`${expense.purpose} 영수증`} loading="lazy" />
+    </div>
   );
 }
 

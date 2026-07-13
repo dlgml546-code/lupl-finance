@@ -8,6 +8,7 @@ drop table if exists public.project_labor_allocations cascade;
 drop table if exists public.bonus_payments cascade;
 drop table if exists public.compensation_reviews cascade;
 drop table if exists public.review_items cascade;
+drop table if exists public.improvement_requests cascade;
 drop table if exists public.expense_requests cascade;
 drop table if exists public.business_projects cascade;
 drop table if exists public.expense_categories cascade;
@@ -95,6 +96,30 @@ create table if not exists public.page_permissions (
   created_at timestamptz not null default now(),
   unique(person_id, page_key)
 );
+
+create table if not exists public.improvement_requests (
+  id uuid primary key default gen_random_uuid(),
+  created_by uuid references public.people(id) on delete set null,
+  request_type text not null default 'bug',
+  request_type_label text not null default '오류',
+  menu_id text,
+  menu_label text,
+  submenu_label text,
+  page_title text,
+  page_path text,
+  note text not null,
+  status text not null default 'open' check (status in ('open','reviewing','planned','done','dismissed')),
+  ai_summary text,
+  ai_payload jsonb not null default '{}'::jsonb,
+  user_agent text,
+  viewport_width int,
+  viewport_height int,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+create index if not exists idx_improvement_requests_status on public.improvement_requests(status, created_at desc);
+create index if not exists idx_improvement_requests_menu on public.improvement_requests(menu_id, submenu_label, created_at desc);
+create index if not exists idx_improvement_requests_created_by on public.improvement_requests(created_by, created_at desc);
 
 
 -- 직원 사번 로그인/비밀번호 변경 상태 컬럼 보정
@@ -320,7 +345,7 @@ declare tbl text;
 begin
   foreach tbl in array array[
     'departments','people','business_projects','expense_requests',
-    'review_items','compensation_reviews','bonus_payments',
+    'review_items','improvement_requests','compensation_reviews','bonus_payments',
     'project_labor_allocations','cash_snapshots','financial_monthly_plans'
   ]
   loop
@@ -382,6 +407,7 @@ alter table public.expense_categories enable row level security;
 alter table public.business_projects enable row level security;
 alter table public.expense_requests enable row level security;
 alter table public.review_items enable row level security;
+alter table public.improvement_requests enable row level security;
 alter table public.compensation_reviews enable row level security;
 alter table public.bonus_payments enable row level security;
 alter table public.project_labor_allocations enable row level security;
@@ -393,7 +419,7 @@ declare tbl text;
 begin
   foreach tbl in array array[
     'departments','people','page_permissions','payment_cards','expense_categories',
-    'business_projects','expense_requests','review_items','compensation_reviews',
+    'business_projects','expense_requests','review_items','improvement_requests','compensation_reviews',
     'bonus_payments','project_labor_allocations','cash_snapshots','financial_monthly_plans'
   ]
   loop
