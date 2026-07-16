@@ -2485,7 +2485,10 @@ export default function App() {
   }
 
   async function deletePermission(permission: PagePermission, options: { confirm?: boolean } = {}) {
-    if (options.confirm !== false && !window.confirm("이 페이지 권한을 삭제할까요?")) return;
+    const personName = people.find((person) => person.id === permission.person_id)?.name || "직원";
+    const pageLabel = getMenuLabelByPageKey(permission.page_key);
+    if (options.confirm !== false && !window.confirm(`${personName}님의 "${pageLabel}" 권한을 삭제할까요?`)) return;
+
     try {
       const { error } = await supabase.from("page_permissions").delete().eq("id", permission.id);
       if (error) throw toFriendlyDbError(error, "권한 삭제에 실패했습니다.");
@@ -2496,8 +2499,6 @@ export default function App() {
       throw error;
     }
   }
-
-
   // 3번: 현금 스냅샷 직접 입력
   async function createCash(formData: FormData) {
     try {
@@ -5077,13 +5078,17 @@ function Org({
         <div className="action-panel-head">
           <div>
             <h2 className="card-title">조직 관리 작업</h2>
-            <p className="card-sub">직원은 사번 기준으로 등록하고, 페이지별 권한은 별도로 부여합니다.</p>
+            <p className="card-sub">
+              {canManage ? "직원은 사번 기준으로 등록하고, 페이지별 권한은 별도로 부여하거나 삭제합니다." : "현재 계정은 조직과 권한 현황을 조회할 수 있습니다."}
+            </p>
           </div>
         </div>
-        <div className="quick-actions quick-two no-margin">
-          <QuickCard title="직원 추가" copy="사번·휴대전화 기준으로 직원 등록" onClick={onCreatePerson} />
-          <QuickCard title="페이지 권한 추가" copy="선택한 사람만 페이지 접근 허용" onClick={onCreatePermission} />
-        </div>
+        {canManage && (
+          <div className="quick-actions quick-two no-margin">
+            <QuickCard title="직원 추가" copy="사번·휴대전화 기준으로 직원 등록" onClick={onCreatePerson} />
+            <QuickCard title="페이지 권한 추가" copy="선택한 사람만 페이지 접근 허용" onClick={onCreatePermission} />
+          </div>
+        )}
       </div>
 
       <div className="card solid section-gap">
