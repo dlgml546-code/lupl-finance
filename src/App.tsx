@@ -149,8 +149,8 @@ type AiFinanceDraft = {
 
 const sectionMeta: Record<SectionKey, { title: string; desc: string }> = {
   overview: {
-    title: "경영현황",
-    desc: "현재 현금, 이번 달 매출, 직원 월급 포함 지출, 현금소진액을 한눈에 봅니다. 데이터를 입력하면 지표가 채워집니다."
+    title: "LUPL CEO Dashboard",
+    desc: "생존, 성장, 운영, 사회적 가치, 재무 요약, AI 알림을 한 화면에서 봅니다."
   },
   finance: {
     title: "재무계획·회계",
@@ -1040,6 +1040,34 @@ function calcAnnualSalary(hourlyWage: number, monthlyHours: number) {
 
 function today() {
   return new Date().toISOString().slice(0, 10);
+}
+
+function addMonthsToMonth(month: string, offset: number) {
+  const [yearRaw, monthRaw] = String(month || today().slice(0, 7)).split("-").map(Number);
+  const date = new Date(Date.UTC(yearRaw || new Date().getFullYear(), (monthRaw || 1) - 1 + offset, 1));
+  const year = date.getUTCFullYear();
+  const nextMonth = String(date.getUTCMonth() + 1).padStart(2, "0");
+  return `${year}-${nextMonth}`;
+}
+
+function monthRange(endMonth: string, count: number) {
+  return Array.from({ length: count }, (_, index) => addMonthsToMonth(endMonth, index - count + 1));
+}
+
+function monthLabel(month: string) {
+  const parsed = Number(String(month).slice(5, 7));
+  return parsed ? `${parsed}월` : month;
+}
+
+function signedPercentDelta(current: number, previous: number) {
+  if (!previous) return null;
+  return Math.round(((current - previous) / previous) * 1000) / 10;
+}
+
+function formatSignedPercent(delta: number | null) {
+  if (delta === null || Number.isNaN(delta)) return "전월 데이터 필요";
+  const sign = delta >= 0 ? "▲" : "▼";
+  return `${sign} ${Math.abs(delta).toFixed(1)}%`;
 }
 
 function getPhoneLast4(phone: string | null | undefined) {
@@ -3032,7 +3060,19 @@ export default function App() {
         </header>
 
         {section === "overview" && (
-          <Overview setSection={setSection} reviewCount={pendingReviews.length} cash={visibleCash} projects={projectsComputed} expenses={expenses} people={people} cards={cards} onAddCash={() => setModal("cashForm")} onOpenCashHistory={() => setModal("cashHistory")} />
+          <Overview
+            setSection={setSection}
+            reviewCount={pendingReviews.length}
+            cash={visibleCash}
+            projects={projectsComputed}
+            expenses={expenses}
+            people={people}
+            cards={cards}
+            financePlans={financePlans}
+            improvements={improvements}
+            onAddCash={() => setModal("cashForm")}
+            onOpenCashHistory={() => setModal("cashHistory")}
+          />
         )}
         {section === "finance" && (
           <FinancePlanning
@@ -3787,8 +3827,375 @@ function AiFinanceAssistant({
   );
 }
 
-// 2,3,5번: 모든 지표를 실데이터 기반. 데이터 없으면 빈 상태 안내
+type CeoAlertTone = "red" | "orange" | "green" | "purple";
+
 function Overview({
+  setSection,
+  reviewCount,
+  cash,
+  projects,
+  expenses,
+  people,
+  cards,
+  financePlans,
+  improvements,
+  onAddCash,
+  onOpenCashHistory
+}: {
+  setSection: (key: SectionKey) => void;
+  reviewCount: number;
+  cash: CashSnapshot[];
+  projects: ProjectComputed[];
+  expenses: ExpenseRequest[];
+  people: Person[];
+  cards: PaymentCard[];
+  financePlans: FinancialMonthlyPlan[];
+  improvements: ImprovementRequest[];
+  onAddCash: () => void;
+  onOpenCashHistory: () => void;
+}) {
+  const latest = cash[0];
+  const currentMonth = today().slice(0, 7);
+  const previousMonth = addMonthsToMonth(currentMonth, -1);
+  const visibleMonths = monthRange(currentMonth, 12);
+  const cashByMonth = new Map(cash.map((item) => [String(item.snapshot_month || "").slice(0, 7), item]));
+  const planByMonth = new Map(financePlans.map((item) => [String(item.period_month || "").slice(0, 7), item]));
+  const currentPlan = planByMonth.get(currentMonth);
+
+  const projectNetRevenue = (project: ProjectComputed) => {
+    const taxMode = project.revenue_tax_mode || projectMemoValue(project, "매출 부가세 처리");
+    const gross = project._isMonthlyRecurring ? Number(project._monthlyRevenue || 0) : Number(project._revenue || 0);
+    return taxMode === "부가세 포함" ? Math.round(gross / 1.1) : gross;
+  };
+  const projectBelongsToMonth = (project: ProjectComputed, month: string) => {
+    const recognitionMonth = getProjectRevenueMonth(project);
+    return project._isMonthlyRecurring ? Boolean(recognitionMonth && recognitionMonth <= month) : recognitionMonth === month;
+  };
+  const projectRevenueForMonth = (month: string) => {
+    const projectRevenue = projects
+      .filter((project) => projectBelongsToMonth(project, month))
+      .reduce((sum, project) => sum + projectNetRevenue(project), 0);
+    return projectRevenue || Number(cashByMonth.get(month)?.revenue || 0);
+  };
+  const expenseForMonth = (month: string) => {
+    const operatingExpense = expenses
+      .filter((expense) => {
+        const expenseMonth = String(expense.used_at || "").slice(0, 7);
+        return isMonthlyRecurringExpense(expense) ? expenseMonth <= month : expenseMonth === month;
+      })
+      .reduce((sum, expense) => {
+        const supplyAmount = Number(expense.supply_amount || 0)
+          || Number(readMemoField(expense.memo, "공급가액").replace(/[^0-9.-]/g, ""))
+          || Number(expense.amount || 0);
+        return sum + supplyAmount;
+      }, 0);
+    const payroll = people.filter((p) => p.is_active).reduce((sum, p) => sum + Number(p.annual_salary || 0) / 12, 0);
+    return operatingExpense + payroll || Number(cashByMonth.get(month)?.expense || 0);
+  };
+
+  const monthlyRevenue = projectRevenueForMonth(currentMonth);
+  const previousRevenue = projectRevenueForMonth(previousMonth);
+  const monthlyExpense = expenseForMonth(currentMonth);
+  const previousExpense = expenseForMonth(previousMonth);
+  const monthlyOperatingExpense = Math.max(0, monthlyExpense - people.filter((p) => p.is_active).reduce((sum, p) => sum + Number(p.annual_salary || 0) / 12, 0));
+  const revenueDelta = signedPercentDelta(monthlyRevenue, previousRevenue);
+  const expenseDelta = signedPercentDelta(monthlyExpense, previousExpense);
+  const monthlyTargetRevenue = Number(currentPlan?.planned_revenue || 0);
+  const targetAchievement = monthlyTargetRevenue > 0 ? Math.round((monthlyRevenue / monthlyTargetRevenue) * 100) : null;
+  const currentCash = latest?.current_cash ?? null;
+  const netBurn = Math.max(0, monthlyExpense - monthlyRevenue);
+  const previousNetBurn = Math.max(0, previousExpense - previousRevenue);
+  const burnDelta = signedPercentDelta(netBurn, previousNetBurn);
+  const runway = currentCash != null && netBurn > 0 ? Math.round((Number(currentCash) / netBurn) * 10) / 10 : latest?.runway_months ?? null;
+  const receivable = projects
+    .filter((project) => {
+      const dueMonth = String(project.payment_due_date || "").slice(0, 7);
+      return project._receivable > 0 && (project._isMonthlyRecurring || !dueMonth || dueMonth <= currentMonth);
+    })
+    .reduce((sum, project) => sum + project._receivable, 0);
+  const receivableDelta = signedPercentDelta(receivable, Number(cashByMonth.get(previousMonth)?.receivable_amount || 0));
+  const payable = expenses
+    .filter((expense) => {
+      const paidMonth = String(expense.paid_at || readMemoField(expense.memo, "실제 지급일") || expense.used_at || "").slice(0, 7);
+      return !["결제 완료", "이체 완료", "해당 없음"].includes(String(expense.transfer_status || "")) && (!paidMonth || paidMonth <= currentMonth);
+    })
+    .reduce((sum, expense) => sum + Number(expense.amount || 0), 0);
+  const expectedMonthEndCash = currentCash != null ? Number(currentCash) + receivable - payable : 0;
+  const monthRows = visibleMonths.map((month) => ({
+    month,
+    label: monthLabel(month),
+    revenue: projectRevenueForMonth(month),
+    target: Number(planByMonth.get(month)?.planned_revenue || 0),
+    cash: Number(cashByMonth.get(month)?.current_cash || 0),
+    expense: expenseForMonth(month)
+  }));
+
+  const overdueReceivables = projects.filter((project) => project._receivable > 0 && Boolean(project.payment_due_date) && String(project.payment_due_date) < today());
+  const completeStatuses: ProjectStatus[] = ["납품 완료", "정산 완료"];
+  const activeProjects = projects.filter((project) => !completeStatuses.includes(project.status) && project.status !== "보류/드롭");
+  const delayedProjects = activeProjects.filter((project) => {
+    const dueDate = project.due_date || project.payment_due_date;
+    return Boolean(dueDate && dueDate < today());
+  });
+  const normalActiveProjects = activeProjects.filter((project) => !delayedProjects.some((item) => item.id === project.id));
+  const slaRate = activeProjects.length ? Math.round((normalActiveProjects.length / activeProjects.length) * 100) : 100;
+  const monthlyProjects = projects.filter((project) => projectBelongsToMonth(project, currentMonth));
+  const newContracts = projects.filter((project) => String((project as BusinessProject & { created_at?: string }).created_at || project.request_date || getProjectRevenueMonth(project)).slice(0, 7) === currentMonth);
+  const systemErrors = improvements.filter((item) => item.request_type === "bug" && !["done", "dismissed"].includes(item.status)).length;
+  const workItems = monthlyProjects.length + expenses.filter((expense) => String(expense.used_at || "").slice(0, 7) === currentMonth).length + reviewCount;
+  const missingReceiptCount = expenses.filter((expense) => !getExpenseReceiptUrl(expense)).length;
+  const transferNeeded = expenses.filter((expense) => expense.transfer_status === "결제 필요");
+  const personalCardExpenses = expenses.filter((expense) => {
+    const card = getExpensePaymentLabel(expense, cards);
+    return card.includes("개인 카드") || card.includes("개인-") || String(expense.transfer_summary || "").includes("개인 카드");
+  });
+
+  const channelBasis = monthlyProjects.length > 0 ? monthlyProjects : projects;
+  const channelTotals = channelBasis.reduce((map, project) => {
+    const label = project.client_type || project.inflow_route || "기타";
+    map.set(label, (map.get(label) || 0) + projectNetRevenue(project));
+    return map;
+  }, new Map<string, number>());
+  const channelColors = ["#46b882", "#7d61d9", "#5b8def", "#f5a623", "#e65b73"];
+  const channelSegments = Array.from(channelTotals.entries())
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 5)
+    .map(([label, value], index) => ({ label, value, color: channelColors[index % channelColors.length] }));
+
+  const textForProject = (project: ProjectComputed) => [
+    project.name,
+    project.client_name,
+    project.client_type,
+    project.project_major_category,
+    project.project_middle_category,
+    project.project_small_category,
+    project.project_group?.join(" "),
+    project.memo
+  ].filter(Boolean).join(" ");
+  const largestNumberInText = (text: string) => {
+    const numbers = Array.from(text.matchAll(/[0-9][0-9,]*/g)).map((match) => Number(match[0].replace(/,/g, ""))).filter((value) => value > 0);
+    return numbers.length ? Math.max(...numbers) : 0;
+  };
+  const socialArtistProjects = projects.filter((project) => {
+    const text = textForProject(project);
+    return (text.includes("장애") && (text.includes("작가") || text.includes("예술가"))) || text.includes("장애예술가");
+  });
+  const licenseProjects = projects.filter((project) => textForProject(project).includes("라이선스") || textForProject(project).includes("작품"));
+  const contestParticipants = projects.filter((project) => textForProject(project).includes("사생대회")).reduce((sum, project) => sum + largestNumberInText(textForProject(project)), 0);
+  const exhibitionVisitors = projects.filter((project) => textForProject(project).includes("전시") || textForProject(project).includes("관람")).reduce((sum, project) => sum + largestNumberInText(textForProject(project)), 0);
+  const contributionProjects = projects.filter((project) => {
+    const text = textForProject(project);
+    return ["공공기관", "비영리재단", "특수학교"].includes(String(project.client_type || "")) || text.includes("사회공헌") || text.includes("장애") || text.includes("공공");
+  });
+
+  const totalAssets = Number(currentCash || 0) + receivable;
+  const totalLiabilities = payable + Math.max(0, monthlyExpense - monthlyOperatingExpense);
+  const netProfit = monthlyRevenue - monthlyExpense;
+  const operatingMargin = monthlyRevenue > 0 ? netProfit / monthlyRevenue : 0;
+  const projectRows = activeProjects
+    .sort((a, b) => Number(delayedProjects.some((item) => item.id === b.id)) - Number(delayedProjects.some((item) => item.id === a.id)))
+    .slice(0, 5);
+  const alertRows = [
+    overdueReceivables.length > 0
+      ? { level: "높음", tone: "red" as CeoAlertTone, text: `미수금 ${formatWon(receivable)} 중 지연 입금 ${overdueReceivables.length}건이 있습니다.`, time: "지금" }
+      : { level: "낮음", tone: "green" as CeoAlertTone, text: "입금 지연 없이 미수금이 관리되고 있습니다.", time: "지금" },
+    delayedProjects.length > 0
+      ? { level: "보통", tone: "orange" as CeoAlertTone, text: `프로젝트 ${delayedProjects.length}건의 마감 또는 입금 일정이 지연되고 있습니다.`, time: "1시간 전" }
+      : { level: "낮음", tone: "green" as CeoAlertTone, text: "진행 프로젝트 일정이 정상 범위입니다.", time: "1시간 전" },
+    targetAchievement !== null && targetAchievement < 100
+      ? { level: "보통", tone: "orange" as CeoAlertTone, text: `매출 목표까지 ${Math.max(0, 100 - targetAchievement)}% 남았습니다.`, time: "2시간 전" }
+      : { level: "낮음", tone: "green" as CeoAlertTone, text: targetAchievement === null ? "이번 달 매출 목표를 입력하면 달성률을 계산합니다." : "매출 목표가 정상적으로 달성되고 있습니다.", time: "2시간 전" },
+    runway !== null && runway < 12
+      ? { level: runway < 6 ? "높음" : "보통", tone: runway < 6 ? "red" as CeoAlertTone : "orange" as CeoAlertTone, text: `현금 런웨이가 ${runway}개월입니다.`, time: "3시간 전" }
+      : { level: "낮음", tone: "green" as CeoAlertTone, text: "현금 런웨이가 안정적인 수준입니다.", time: "3시간 전" }
+  ];
+  const dashboardReady = Boolean(latest || projects.length > 0 || expenses.length > 0);
+
+  return (
+    <section className="section active ceo-dashboard">
+      {!dashboardReady && (
+        <div className="alert-top info compact-notice">
+          <div>
+            <strong>아직 대시보드에 표시할 데이터가 부족합니다.</strong>
+            <span>현금 현황, 프로젝트, 지출결의를 입력하면 아래 CEO 지표가 자동으로 채워집니다.</span>
+          </div>
+          <button className="btn small" onClick={onAddCash}>현금 입력</button>
+        </div>
+      )}
+
+      <section className="ceo-panel ceo-signal-panel">
+        <CeoSectionTitle index={0} title="경영 신호등" />
+        <div className="ceo-signal-grid">
+          <CeoSignalCard tone={runway !== null && runway < 6 ? "red" : runway !== null && runway < 12 ? "orange" : "green"} title={`현금 런웨이 ${runway !== null ? `${runway}개월` : "미입력"}`} copy={runway !== null ? (runway >= 12 ? "안정적 수준 유지 중" : "현금 계획 점검 필요") : "현금 현황 입력 필요"} onClick={onOpenCashHistory} />
+          <CeoSignalCard tone={overdueReceivables.length > 0 ? "orange" : receivable > 0 ? "yellow" : "green"} title={`미수금 ${formatWon(receivable)}`} copy={receivableDelta !== null ? `전월 대비 ${formatSignedPercent(receivableDelta)}` : `${overdueReceivables.length}건 지연 확인`} onClick={() => setSection("revenue")} />
+          <CeoSignalCard tone={delayedProjects.length > 0 ? "red" : "green"} title={`프로젝트 ${delayedProjects.length}건 지연`} copy={activeProjects.length ? `활성 프로젝트 ${activeProjects.length}건 중` : "진행 프로젝트 없음"} onClick={() => setSection("revenue")} />
+          <CeoSignalCard tone={targetAchievement === null ? "yellow" : targetAchievement >= 80 ? "green" : targetAchievement >= 50 ? "orange" : "red"} title={targetAchievement === null ? "매출 목표 미설정" : `매출 목표 달성률 ${targetAchievement}%`} copy={targetAchievement === null ? "재무계획에서 목표 입력 필요" : `목표까지 ${Math.max(0, 100 - targetAchievement)}% 남음`} onClick={() => setSection("finance")} />
+        </div>
+      </section>
+
+      <section className="ceo-panel">
+        <CeoSectionTitle index={1} title="회사 생존지표" label="Survival" />
+        <div className="ceo-survival-grid">
+          <CeoMetricCard label="전체 현금 잔고" value={currentCash !== null ? formatWon(currentCash) : "미입력"} delta={formatSignedPercent(signedPercentDelta(Number(currentCash || 0), Number(cashByMonth.get(previousMonth)?.current_cash || 0)))} sparkValues={monthRows.map((row) => row.cash)} onClick={onOpenCashHistory} />
+          <CeoMetricCard label="월 평균 소진 비용" value={formatWon(monthlyExpense)} delta={formatSignedPercent(expenseDelta)} deltaTone={expenseDelta !== null && expenseDelta > 0 ? "red" : "green"} sparkValues={monthRows.map((row) => row.expense)} onClick={() => setSection("expense")} />
+          <CeoMetricCard label="현금 런웨이" value={runway !== null ? `${runway}개월` : "계산 필요"} delta={formatSignedPercent(burnDelta)} deltaTone={burnDelta !== null && burnDelta > 0 ? "red" : "green"} sparkValues={monthRows.map((row) => row.cash)} onClick={onOpenCashHistory} />
+          <CeoMetricCard label="예상 월말 현금" value={formatWon(expectedMonthEndCash)} delta={formatSignedPercent(signedPercentDelta(expectedMonthEndCash, Number(cashByMonth.get(previousMonth)?.current_cash || 0)))} sparkValues={monthRows.map((row) => row.cash)} onClick={onOpenCashHistory} />
+          <CeoMetricCard label="입금 예정" value={formatWon(receivable)} delta={overdueReceivables.length ? `${overdueReceivables.length}건 지연` : "지연 없음"} deltaTone={overdueReceivables.length ? "red" : "green"} onClick={() => setSection("revenue")} />
+          <CeoMetricCard label="지급 예정" value={formatWon(payable)} delta={transferNeeded.length ? `${transferNeeded.length}건 결제 필요` : "이체 대기 없음"} deltaTone={transferNeeded.length ? "orange" : "green"} onClick={() => setSection("expense")} />
+        </div>
+      </section>
+
+      <div className="ceo-main-grid">
+        <section className="ceo-panel ceo-growth-panel">
+          <CeoSectionTitle index={2} title="회사 성장지표" label="Growth" />
+          <div className="ceo-mini-grid">
+            <CeoSmallStat label="이번 달 매출" value={formatWon(monthlyRevenue)} sub={`전월 대비 ${formatSignedPercent(revenueDelta)}`} tone={revenueDelta !== null && revenueDelta < 0 ? "red" : "green"} />
+            <CeoSmallStat label="매출 목표 달성률" value={targetAchievement === null ? "-" : `${targetAchievement}%`} sub={monthlyTargetRevenue ? `목표 ${formatWon(monthlyTargetRevenue)}` : "목표 입력 필요"} tone={targetAchievement !== null && targetAchievement >= 80 ? "green" : "orange"} />
+            <CeoSmallStat label="신규 계약 수" value={`${newContracts.length}건`} sub={`이번 달 등록 기준`} tone="green" />
+            <CeoSmallStat label="활성 프로젝트 수" value={`${activeProjects.length}건`} sub={`지연 ${delayedProjects.length}건 포함`} tone={delayedProjects.length ? "orange" : "green"} />
+          </div>
+          <div className="ceo-growth-charts">
+            <div className="ceo-chart-card wide">
+              <div className="ceo-chart-head"><strong>월별 매출 추이</strong><span>단위: 원</span></div>
+              <CeoLineChart rows={monthRows} />
+            </div>
+            <div className="ceo-chart-card">
+              <div className="ceo-chart-head"><strong>매출 채널별 비중</strong><span>{formatWon(monthlyRevenue || channelSegments.reduce((sum, item) => sum + item.value, 0))}</span></div>
+              <CeoDonutChart segments={channelSegments} />
+            </div>
+          </div>
+        </section>
+
+        <section className="ceo-panel ceo-operations-panel">
+          <CeoSectionTitle index={3} title="회사 운영지표" label="Operations" />
+          <div className="ceo-mini-grid">
+            <CeoSmallStat label="프로젝트 지연" value={`${delayedProjects.length}건`} sub={`진행 중 ${activeProjects.length}건`} tone={delayedProjects.length ? "red" : "green"} />
+            <CeoSmallStat label="SLA 달성률" value={`${slaRate}%`} sub="정상 진행 비율" tone={slaRate >= 90 ? "green" : "orange"} />
+            <CeoSmallStat label="업무 처리 건수" value={`${workItems}건`} sub={`검토 ${reviewCount}건 포함`} tone="green" />
+            <CeoSmallStat label="시스템 오류" value={`${systemErrors}건`} sub="개선함 bug 기준" tone={systemErrors ? "red" : "green"} />
+          </div>
+          <div className="ceo-project-table">
+            <div className="ceo-project-head"><span>프로젝트명</span><span>상태</span><span>진행률</span><span>예정 완료일</span></div>
+            {projectRows.length === 0 ? <EmptyState text="진행 중인 프로젝트가 없습니다." /> : projectRows.map((project) => <CeoProjectRow key={project.id} project={project} delayed={delayedProjects.some((item) => item.id === project.id)} />)}
+          </div>
+        </section>
+      </div>
+
+      <div className="ceo-bottom-grid">
+        <section className="ceo-panel">
+          <CeoSectionTitle index={4} title="사회적 가치 지표" label="Impact" />
+          <div className="ceo-impact-grid">
+            <CeoImpactStat label="장애예술가 계약 수" value={`${socialArtistProjects.length}명`} sub={`전월 대비 ${socialArtistProjects.length ? "▲" : ""} ${socialArtistProjects.length}명`} />
+            <CeoImpactStat label="라이선스 작품 수" value={`${licenseProjects.length}개`} sub={`전월 대비 ${licenseProjects.length ? "▲" : ""} ${licenseProjects.length}개`} />
+            <CeoImpactStat label="사생대회 참가자 수" value={`${contestParticipants}명`} sub="프로젝트 메모 기준" />
+            <CeoImpactStat label="전시 관람객 수" value={`${exhibitionVisitors}명`} sub="프로젝트 메모 기준" />
+            <CeoImpactStat label="사회공헌 프로젝트 수" value={`${contributionProjects.length}개`} sub={`진행 중 ${contributionProjects.filter((project) => !completeStatuses.includes(project.status)).length}개`} />
+          </div>
+        </section>
+
+        <section className="ceo-panel">
+          <CeoSectionTitle index={5} title="재무 요약" label="Financial Summary" />
+          <div className="ceo-finance-grid">
+            <CeoSmallStat label="총 자산" value={formatWon(totalAssets)} sub={`전월 대비 ${formatSignedPercent(signedPercentDelta(totalAssets, Number(cashByMonth.get(previousMonth)?.current_cash || 0)))}`} tone="green" />
+            <CeoSmallStat label="총 부채" value={formatWon(totalLiabilities)} sub={`전월 대비 ${formatSignedPercent(signedPercentDelta(totalLiabilities, Number(cashByMonth.get(previousMonth)?.payable_amount || 0)))}`} tone="green" />
+            <CeoSmallStat label="순이익" value={formatWon(netProfit)} sub="이번 달 누적" tone={netProfit >= 0 ? "green" : "red"} />
+            <CeoSmallStat label="영업이익률" value={formatPercent(operatingMargin)} sub={`전월 대비 ${formatSignedPercent(signedPercentDelta(operatingMargin, previousRevenue ? (previousRevenue - previousExpense) / previousRevenue : 0))}`} tone={operatingMargin >= 0 ? "green" : "red"} />
+          </div>
+        </section>
+
+        <section className="ceo-panel">
+          <CeoSectionTitle index={6} title="AI 경영 알림" label="AI Alerts" />
+          <div className="ceo-alert-list">
+            {alertRows.map((alert, index) => <CeoAlertRow key={`${alert.level}-${index}`} {...alert} />)}
+            {missingReceiptCount > 0 && <CeoAlertRow level="보통" tone="orange" text={`영수증 증빙 누락 ${missingReceiptCount}건을 확인해 주세요.`} time="오늘" />}
+            {personalCardExpenses.length > 0 && <CeoAlertRow level="보통" tone="purple" text={`개인카드 정산 대상 ${personalCardExpenses.length}건, ${formatWon(personalCardExpenses.reduce((sum, expense) => sum + Number(expense.amount || 0), 0))}입니다.`} time="오늘" />}
+          </div>
+        </section>
+      </div>
+    </section>
+  );
+}
+
+function CeoSectionTitle({ index, title, label }: { index: number; title: string; label?: string }) {
+  return <div className="ceo-section-title">{index > 0 && <span>{index}.</span>}<strong>{title}</strong>{label && <em>({label})</em>}</div>;
+}
+
+function CeoSignalCard({ tone, title, copy, onClick }: { tone: "red" | "orange" | "yellow" | "green"; title: string; copy: string; onClick: () => void }) {
+  return <button className={`ceo-signal-card ${tone}`} type="button" onClick={onClick}><span className="ceo-signal-icon">!</span><div><strong>{title}</strong><em>{copy}</em></div></button>;
+}
+
+function CeoMetricCard({ label, value, delta, deltaTone = "green", sparkValues, onClick }: { label: string; value: string; delta: string; deltaTone?: "green" | "red" | "orange"; sparkValues?: number[]; onClick?: () => void }) {
+  const content = <><span>{label}</span><strong>{value}</strong><em className={deltaTone}>{delta}</em>{sparkValues && <CeoSparkline values={sparkValues} />}</>;
+  if (!onClick) return <div className="ceo-metric-card">{content}</div>;
+  return <button className="ceo-metric-card clickable" type="button" onClick={onClick}>{content}</button>;
+}
+
+function CeoSmallStat({ label, value, sub, tone }: { label: string; value: string; sub: string; tone: "green" | "red" | "orange" }) {
+  return <div className={`ceo-small-stat ${tone}`}><span>{label}</span><strong>{value}</strong><em>{sub}</em></div>;
+}
+
+function CeoImpactStat({ label, value, sub }: { label: string; value: string; sub: string }) {
+  return <div className="ceo-impact-stat"><span>{label}</span><strong>{value}</strong><em>{sub}</em></div>;
+}
+
+function CeoSparkline({ values }: { values: number[] }) {
+  const series = values.length >= 2 ? values : [0, values[0] || 0];
+  const min = Math.min(...series);
+  const max = Math.max(...series);
+  const range = Math.max(max - min, 1);
+  const points = series.map((value, index) => {
+    const x = 6 + (index / Math.max(series.length - 1, 1)) * 108;
+    const y = 34 - ((value - min) / range) * 24;
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(" ");
+  return <svg className="ceo-sparkline" viewBox="0 0 120 40" aria-hidden="true"><polyline points={points} fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" /></svg>;
+}
+
+function CeoLineChart({ rows }: { rows: Array<{ month: string; label: string; revenue: number; target: number }> }) {
+  const max = Math.max(...rows.flatMap((row) => [row.revenue, row.target]), 1);
+  const revenuePoints = rows.map((row, index) => `${(10 + (index / Math.max(rows.length - 1, 1)) * 280).toFixed(1)},${(120 - (row.revenue / max) * 92).toFixed(1)}`).join(" ");
+  const targetPoints = rows.map((row, index) => `${(10 + (index / Math.max(rows.length - 1, 1)) * 280).toFixed(1)},${(120 - ((row.target || 0) / max) * 92).toFixed(1)}`).join(" ");
+  const hasTarget = rows.some((row) => row.target > 0);
+  return (
+    <div className="ceo-line-chart">
+      <svg viewBox="0 0 300 148" role="img" aria-label="월별 매출 추이 그래프">
+        <line x1="10" y1="120" x2="290" y2="120" />
+        <line x1="10" y1="74" x2="290" y2="74" />
+        <line x1="10" y1="28" x2="290" y2="28" />
+        {hasTarget && <polyline className="target" points={targetPoints} fill="none" />}
+        <polyline className="revenue" points={revenuePoints} fill="none" />
+        {rows.map((row, index) => <circle key={row.month} cx={10 + (index / Math.max(rows.length - 1, 1)) * 280} cy={120 - (row.revenue / max) * 92} r="3" />)}
+      </svg>
+      <div className="ceo-chart-axis">{rows.filter((_, index) => index % 2 === 1).map((row) => <span key={row.month}>{row.label}</span>)}</div>
+    </div>
+  );
+}
+
+function CeoDonutChart({ segments }: { segments: Array<{ label: string; value: number; color: string }> }) {
+  const total = segments.reduce((sum, item) => sum + item.value, 0);
+  let cursor = 0;
+  const gradient = total > 0 ? `conic-gradient(${segments.map((segment) => {
+    const start = cursor;
+    const end = cursor + (segment.value / total) * 100;
+    cursor = end;
+    return `${segment.color} ${start}% ${end}%`;
+  }).join(", ")})` : "rgba(16, 24, 40, 0.08)";
+  return <div className="ceo-donut-wrap"><div className="ceo-donut" style={{ background: gradient }}><strong>{total > 0 ? formatWonShort(total) : "-"}</strong><span>총 매출</span></div><div className="ceo-donut-legend">{segments.length === 0 ? <span>매출 채널 데이터가 없습니다.</span> : segments.map((segment) => <div key={segment.label}><i style={{ background: segment.color }} /><span>{segment.label}</span><strong>{total > 0 ? Math.round((segment.value / total) * 100) : 0}%</strong></div>)}</div></div>;
+}
+
+function CeoProjectRow({ project, delayed }: { project: ProjectComputed; delayed: boolean }) {
+  const progressByStatus: Record<ProjectStatus, number> = { "접수": 10, "제안/견적": 20, "컨펌 대기": 35, "진행 중": 62, "납품 완료": 88, "정산 대기": 94, "정산 완료": 100, "보류/드롭": 20 };
+  const progress = progressByStatus[project.status] ?? 50;
+  const dueDate = project.due_date || project.payment_due_date || "-";
+  return <div className="ceo-project-row"><strong>{project.name}</strong><span className={`ceo-status ${delayed ? "delay" : "normal"}`}>{delayed ? "지연" : "정상"}</span><div className="ceo-progress"><i style={{ width: `${progress}%` }} /></div><span className={delayed ? "date delayed" : "date"}>{dueDate}</span></div>;
+}
+
+function CeoAlertRow({ level, tone, text, time }: { level: string; tone: CeoAlertTone; text: string; time: string }) {
+  return <div className={`ceo-alert-row ${tone}`}><span>{level}</span><strong>{text}</strong><em>{time}</em></div>;
+}
+
+// 2,3,5번: 이전 경영현황. 신규 CEO Dashboard 적용 후 참고용으로 남긴다.
+function LegacyOverview({
   setSection,
   reviewCount,
   cash,
